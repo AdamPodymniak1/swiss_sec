@@ -509,6 +509,16 @@ public:
             memcpy(x_coords, public_key + 1, 32);
             memcpy(y_coords, public_key + 33, 32);
 
+            Serial.print("[REG] privKey: ");
+            for (int _i = 0; _i < 32; _i++) Serial.printf("%02x", private_key_d[_i]);
+            Serial.println();
+            Serial.print("[REG] pubKey X: ");
+            for (int _i = 0; _i < 32; _i++) Serial.printf("%02x", x_coords[_i]);
+            Serial.println();
+            Serial.print("[REG] pubKey Y: ");
+            for (int _i = 0; _i < 32; _i++) Serial.printf("%02x", y_coords[_i]);
+            Serial.println();
+
             // =====================================================
             // FORCE ALIGNED TOHEX SERIALIZATION
             // =====================================================
@@ -595,6 +605,10 @@ public:
             memcpy(&finalAuthData[offset], coseYHeader, 3); offset += 3;
             memcpy(&finalAuthData[offset], y_coords, 32); offset += 32;
 
+            Serial.print("[REG] finalAuthData (" ); Serial.print(offset); Serial.print("B): ");
+            for (int _i = 0; _i < offset; _i++) Serial.printf("%02x", finalAuthData[_i]);
+            Serial.println();
+
             encoder.writeByteString(finalAuthData, offset);
 
             encoder.writeUnsignedInt(3);
@@ -607,7 +621,12 @@ public:
             tft.println("REGISTERED SUCCESS!");
             return;
         }
-        else if (ctap2Cmd == 0x02) { 
+        else if (ctap2Cmd == 0x02) {
+            Serial.print("[RAW] GetAssertion bytes: ");
+            for (int _i = 1; _i < (int)len && _i < 128; _i++)
+                Serial.printf("%02X", data[_i]);
+            Serial.println();
+
             char targetRpId[128] = {0};
 
             uint8_t clientDataHash[32] = {0};
@@ -870,6 +889,9 @@ public:
             size_t finalSigLen = sizeof(signatureASN1); 
             
             // Generujemy podpis. Zauważ, kurwa, że wywaliłem ten stary encoder stąd!
+            Serial.print("[LOGIN] privKey: ");
+            Serial.println(storedPrivateKeyHex);
+
             if (!generateFido2Signature(storedPrivateKeyHex, hashedMessage, 32, signatureASN1, &finalSigLen)) {
                 Serial.println("[ERR] SIGN FAILED");
                 uint8_t err = 0x01; // CTAP1_ERR_INVALID_COMMAND
