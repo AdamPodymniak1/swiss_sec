@@ -108,7 +108,12 @@ void updateFingerprintAsync() {
     if (currentCommandState != STATE_AWAITING_FINGERPRINT) return;
 
     uint8_t imageResult = finger.getImage();
-    
+
+    for (uint8_t retry = 0; retry < 3 && imageResult != FINGERPRINT_OK && imageResult != FINGERPRINT_NOFINGER; retry++) {
+        delay(50);
+        imageResult = finger.getImage();
+    }
+
     if (imageResult == FINGERPRINT_OK) {
         uint8_t tzResult = finger.image2Tz();
         

@@ -56,6 +56,28 @@ void dumpHex(const uint8_t* buf, size_t len) {
     Terminal.println();
 }
 
+// Robust single-shot biometric check shared by the FIDO2 ceremonies.
+// The R503 sensor sleeps after inactivity: the first getImage() once a finger is
+// placed wakes the UART but returns a comms error instead of FINGERPRINT_OK.
+// We retry immediately in the same frame (like the working old.cpp loop) so the
+// read isn't lost before the finger is lifted. Without this, the GetAssertion
+// loop never matches and the host login times out.
+static bool fidoVerifyFingerprint() {
+    uint8_t img = finger.getImage();
+
+    // Sensor woke but errored on the first poll -> hammer it a few times right now,
+    // instead of waiting a full loop iteration (by then the finger is usually gone).
+    for (uint8_t retry = 0; retry < 3 && img != FINGERPRINT_OK && img != FINGERPRINT_NOFINGER; retry++) {
+        delay(50);
+        img = finger.getImage();
+    }
+
+    if (img != FINGERPRINT_OK) return false;              // no finger / still waking
+    if (finger.image2Tz() != FINGERPRINT_OK) return false;
+    if (finger.fingerSearch() != FINGERPRINT_OK) return false;
+    return finger.confidence > 50;                        // reject weak matches
+}
+
 void debugAssertInputs(
     const char* rpId,
     uint8_t authData[37],
@@ -481,7 +503,7 @@ public:
                     lastKeepAlive = millis();
                 }
                 
-                if (finger.getImage() == FINGERPRINT_OK && finger.image2Tz() == FINGERPRINT_OK && finger.fingerSearch() == FINGERPRINT_OK) {
+                if (fidoVerifyFingerprint()) {
                     biometricVerified = true;
                     break;
                 }
@@ -791,10 +813,8 @@ public:
                     lastKeepAlive = millis();
                 }
 
-                // Check fingerprint sensor
-                if (finger.getImage() == FINGERPRINT_OK &&
-                    finger.image2Tz() == FINGERPRINT_OK &&
-                    finger.fingerSearch() == FINGERPRINT_OK) {
+                // Check fingerprint sensor (wake-up aware; see fidoVerifyFingerprint)
+                if (fidoVerifyFingerprint()) {
                     biometricVerified = true;
                     break; // Finger matched! Exit the loop.
                 }
@@ -958,10 +978,9 @@ public:
             // --- TRANSMIT ---
             // Liczymy offset bezpiecznie używając naszego świeżego lokalnego encodera
             size_t finalPayloadSize = localEncoder.getOffset() + 1;
-            sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize); 
-            hasPendingCommand = false;
-            
-            // Dajemy czas na wypchnięcie buforów USB
+            sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize);
+
+            // Daj USB chwilę na wypchnięcie ostatnich ramek odpowiedzi.
             #if defined(ARDUINO_ARCH_ESP32)
                 vTaskDelay(10 / portTICK_PERIOD_MS);
             #else
@@ -972,42 +991,11 @@ public:
             tft.setTextColor(TFT_GREEN, TFT_BLACK);
             tft.println("VERIFICATION SUCCESS");
 
-            // =====================================================
-            // SAFE SLOWED DIAGNOSTIC PRINTS
-            // =====================================================
-            Terminal.println("\n============= [DIAGNOSTIC ASSERTION DUMP] =============");
-            Terminal.print("Target RP ID       : "); Terminal.println(targetRpId);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("ClientDataHash     : "); dumpHex(clientDataHash, 32);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("Credential ID (Hex): "); Terminal.println(credentialIdHex);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("User ID (Hex)      : "); Terminal.println(storedUserIdHex);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("Generated AuthData : "); dumpHex(authData, 37);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("ASN1 DER Signature : "); dumpHex(signatureASN1, finalSigLen);
-            Terminal.flush(); delay(5);
-
-            Serial.print("Final payload size: "); Serial.println(finalPayloadSize);
-            Terminal.flush(); delay(5);
-
-            Terminal.print("Raw CBOR Payload   : ");
-            for (size_t idx = 0; idx <= localEncoder.getOffset(); idx++) { // Zmienione na localEncoder!
-                Terminal.printf("%02X", localRespBuf[idx]);
-                if (idx % 32 == 0 && idx > 0) {
-                    Terminal.flush(); 
-                    delay(2); 
-                }
-            }
-            Terminal.println("\n=======================================================\n");
-            Terminal.flush();
-
+            // UWAGA: zero logow Serial/Terminal w tym miejscu. Wczesniejszy dlugi dump
+            // diagnostyczny (a) blokowal powrot z ceremonii na ~100 ms, dajac _onOutput
+            // czas na zakolejkowanie kolejnego GetAssertion, ktore poll() potem kasowal
+            // (login -> timeout), oraz (b) ryzykowal kolizje na stosie USB. Flage kolejki
+            // czysci wylacznie poll(), juz po powrocie stad.
             return;
         }
         // ==========================================
@@ -1020,10 +1008,25 @@ public:
     }
 
     void poll() {
-        if (hasPendingCommand) {
-            processCtapCommand(pendingChannel, pendingCmd, pendingData, pendingLen);
-            hasPendingCommand = false; // Clear flag after execution
-        }
+        if (!hasPendingCommand) return;
+
+        // Zrob snapshot zadania i ZWOLNIJ kolejke PRZED przetwarzaniem. Ceremonia
+        // GetAssertion blokuje tu na sekundy (czekanie na palec); zaraz po odpowiedzi
+        // na pre-flight up:false Windows wysyla prawdziwy GetAssertion up:true.
+        // _onOutput musi moc go zakolejkowac w trakcie - inaczej (czyszczenie flagi
+        // PO przetworzeniu) swieze zadanie zostaje skasowane i host nigdy nie dostaje
+        // asercji (login -> timeout).
+        //
+        // Dane snapshotujemy do lokalnego bufora, bo po zwolnieniu flagi _onOutput
+        // moze nadpisac pendingData kolejnym zadaniem, gdy jeszcze konczymy to.
+        uint32_t ch   = pendingChannel;
+        uint8_t  cmd  = pendingCmd;
+        uint16_t dlen = pendingLen;
+        static uint8_t data[sizeof(pendingData)];
+        memcpy(data, pendingData, dlen);
+        hasPendingCommand = false;
+
+        processCtapCommand(ch, cmd, data, dlen);
     }
 
     // Hardware Capture Point - Demuxer
