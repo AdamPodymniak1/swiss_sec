@@ -1,7 +1,7 @@
 #include "FingerprintManager.h"
 #include "DisplayManager.h"
 #include "Globals.h"
-#include "CryptoManager.h" // Needed for generateRandomPassword and hashSHA256
+#include "CryptoManager.h"
 
 HardwareSerial mySerial(1);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
@@ -143,17 +143,10 @@ void updateFingerprintAsync() {
                     tft.setCursor(20, 50);
                     tft.println("TRANSMITTED!");
                     
-                    // =================================================================
-                    // FIX #4: Non-blocking yield loop replaces delay(1200);
-                    // This prevents FIDO2 CTAPHID Keepalive starvation over USB
-                    // =================================================================
                     unsigned long startWait = millis();
                     while (millis() - startWait < 1200) {
-                        // If you are using a USB stack like TinyUSB, call its task here
-                        // tud_task(); 
-                        yield(); // Keep the ESP32 watchdog and background tasks happy
+                        yield();
                     }
-                    // =================================================================
                     
                     tft.fillScreen(TFT_BLACK);
                     tft.setTextColor(TFT_WHITE, TFT_BLACK);

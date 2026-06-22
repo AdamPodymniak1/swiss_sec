@@ -164,6 +164,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
     uint8_t responseBuffer[512];
     responseBuffer[0] = 0x00; 
 
+    // Global static tracking for biometric cache to avoid system double-clipping
+    static unsigned long lastFingerprintSuccessTime = 0;
+
     if (ctap2Cmd == 0x04) {
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 511);
@@ -396,9 +399,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         return;
     }
     else if (ctap2Cmd == 0x02) {
-        char targetRpId[128] = {0};
-        uint8_t clientDataHash[32] = {0};
+        // MOVED TO STATIC: Keep stack usage safe from crashes
+        static char targetRpId[128];
+        static uint8_t clientDataHash[32];
+        memset(targetRpId, 0, sizeof(targetRpId));
+        memset(clientDataHash, 0, sizeof(clientDataHash));
+        
         size_t clientDataHashLen = 0;
+
+        bool optionUP = true; 
+        bool optionUV = false;
 
         static const size_t MAX_ALLOW_CREDENTIALS = 32;
         static uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][64];
@@ -467,6 +477,30 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     }
                 }
             }
+            else if (mapKey == 0x05) {
+                uint8_t optType;
+                uint64_t optElements;
+                if (parser.readTypeAndValue(optType, optElements) && optType == 5) {
+                    for (uint64_t j = 0; j < optElements; j++) {
+                        char optKey[32] = {0};
+                        if (parser.readTextString(optKey, sizeof(optKey))) {
+                            if (strcmp(optKey, "up") == 0) {
+                                uint8_t valType; uint64_t valVal;
+                                if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                    optionUP = (valVal == 21);
+                                } else { parser.skipValue(); }
+                            }
+                            else if (strcmp(optKey, "uv") == 0) {
+                                uint8_t valType; uint64_t valVal;
+                                if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                    optionUV = (valVal == 21);
+                                } else { parser.skipValue(); }
+                            }
+                            else { parser.skipValue(); }
+                        } else { parser.skipValue(); }
+                    }
+                } else { parser.skipValue(); }
+            }
             else {
                 parser.skipValue();
             }
@@ -518,38 +552,48 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (storedRpId != String(targetRpId)) {
-            uint8_t err = 0x2E;
+            uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
         }
-
-        tft.fillScreen(TFT_YELLOW);
-        tft.setCursor(10, 20);
-        tft.println("VERIFY FINGERPRINT");
-        tft.println("TO SIGN IN...");
 
         bool biometricVerified = false;
-        unsigned long authStart = millis();
-        unsigned long lastKeepAlive = 0;
 
-        while (millis() - authStart < 15000) {
-            if (millis() - lastKeepAlive > 500) {
-                uint8_t status = 0x02; 
-                sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
-                lastKeepAlive = millis();
-            }
-
-            if (fidoVerifyFingerprint()) {
+        if (optionUP || optionUV) {
+            if (millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
-                break; 
-            }
-            delay(50);
-        }
+            } else {
+                tft.fillScreen(TFT_YELLOW);
+                tft.setCursor(10, 20);
+                tft.println("VERIFY FINGERPRINT");
+                tft.println("TO SIGN IN...");
 
-        if (!biometricVerified) {
-            uint8_t err = 0x34; 
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return;
+                unsigned long authStart = millis();
+                unsigned long lastKeepAlive = 0;
+
+                while (millis() - authStart < 15000) {
+                    if (millis() - lastKeepAlive > 500) {
+                        uint8_t status = 0x02; // TUP_NEEDED / Oczekiwanie na użytkownika
+                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        lastKeepAlive = millis();
+                    }
+
+                    if (fidoVerifyFingerprint()) {
+                        biometricVerified = true;
+                        lastFingerprintSuccessTime = millis(); 
+                        break; 
+                    }
+                    delay(50);
+                }
+            }
+
+            if (!biometricVerified) {
+                uint8_t err = 0x34; // CTAP2_ERR_USER_VERIFICATION_FAILED
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                return;
+            }
+        } else {
+            biometricVerified = true;
         }
 
         static uint8_t authData[37];
@@ -562,20 +606,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_context_t sha_ctx;
         mbedtls_md_init(&sha_ctx);
 
-        const mbedtls_md_info_t* info =
-            mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+        const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
 
         mbedtls_md_setup(&sha_ctx, info, 0);
         mbedtls_md_starts(&sha_ctx);
 
-        char cleanRpId[128];
+        static char cleanRpId[128]; // MOVED TO STATIC
         memset(cleanRpId, 0, sizeof(cleanRpId));
         strncpy(cleanRpId, targetRpId, sizeof(cleanRpId) - 1);
 
-        mbedtls_md_update(&sha_ctx,
-                        (const unsigned char*)cleanRpId,
-                        strlen(cleanRpId));
-
+        mbedtls_md_update(&sha_ctx, (const unsigned char*)cleanRpId, strlen(cleanRpId));
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
@@ -614,7 +654,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
         
-        uint8_t localRespBuf[512];
+        // MOVED TO STATIC: Completely prevents the stack explosion crash loop
+        static uint8_t localRespBuf[512]; 
+        memset(localRespBuf, 0, sizeof(localRespBuf));
         localRespBuf[0] = 0x00; 
 
         CborEncoder localEncoder(&localRespBuf[1], 511);
@@ -625,7 +667,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
         
-        uint8_t binCredId[64];
+        static uint8_t binCredId[64]; // MOVED TO STATIC
+        memset(binCredId, 0, sizeof(binCredId));
         size_t binCredLen = credentialIdHex.length() / 2;
         if (binCredLen > sizeof(binCredId)) binCredLen = sizeof(binCredId); 
         fromHex(credentialIdHex, binCredId, binCredLen);
@@ -644,7 +687,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeMapHeader(3); 
         
         localEncoder.writeTextString("id");
-        uint8_t rawUserIdBytes[64] = {0};
+        static uint8_t rawUserIdBytes[64]; // MOVED TO STATIC
+        memset(rawUserIdBytes, 0, sizeof(rawUserIdBytes));
         size_t userIdLen = storedUserIdHex.length() / 2;
         if (userIdLen > sizeof(rawUserIdBytes)) userIdLen = sizeof(rawUserIdBytes);
         fromHex(storedUserIdHex, rawUserIdBytes, userIdLen);

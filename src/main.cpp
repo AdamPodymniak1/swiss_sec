@@ -62,10 +62,10 @@ void setup() {
 
 void loop() {
     FidoHID.poll();
-    // 1. Check asynchronous hardware sensors first
+    // Check asynchronous hardware sensors first
     updateFingerprintAsync();
 
-    // 2. Early exit out of serial processing pipeline if frame buffers are empty
+    // Early exit out of serial processing pipeline if frame buffers are empty
     if (!Serial.available()) return;
 
     String rawInput = Serial.readStringUntil('\n');
@@ -123,7 +123,7 @@ void loop() {
         return;
     }
 
-    // STEP 1: INITIAL PIN / MASTER PIN ENFORCEMENT ENGINE
+    // INITIAL PIN / MASTER PIN ENFORCEMENT ENGINE
     if (!isMasterPinSet()) {
         if (currentCommandState != STATE_AWAITING_MASTER_PIN_SETUP) {
             Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
@@ -201,7 +201,7 @@ void loop() {
         }
     }
 
-    // STEP 2: ASYNCHRONOUS STATE MACHINE COMMAND PROCESSING
+    // ASYNCHRONOUS STATE MACHINE COMMAND PROCESSING
     switch (currentCommandState) {
         
         case STATE_READY:
