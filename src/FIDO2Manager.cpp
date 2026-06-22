@@ -225,6 +225,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         uint8_t userIdRaw[64] = {0};
         size_t userIdLen = 0;
         char userName[128] = {0};
+        bool hmacSecretRequested = false; // Flag tracking extension support request
 
         CborParser parser(data + 1, len - 1);
         uint8_t rootType;
@@ -268,6 +269,22 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                             }
                         }
                     }
+                }
+                else if (mapKey == 0x04) { // Parse Extensions request map
+                    uint8_t extType; uint64_t extElements;
+                    if (parser.readTypeAndValue(extType, extElements) && extType == 5) {
+                        for (uint64_t j = 0; j < extElements; j++) {
+                            char extKey[32] = {0};
+                            if (parser.readTextString(extKey, sizeof(extKey))) {
+                                if (strcmp(extKey, "hmac-secret") == 0) {
+                                    uint8_t valType; uint64_t valVal;
+                                    if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                        hmacSecretRequested = (valVal == 21); // true
+                                    } else { parser.skipValue(); }
+                                } else { parser.skipValue(); }
+                            } else { parser.skipValue(); }
+                        }
+                    } else { parser.skipValue(); }
                 }
                 else {
                     parser.skipValue(); 
@@ -351,7 +368,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = 0x00; 
         CborEncoder encoder(&responseBuffer[1], 511);
 
-        encoder.writeMapHeader(3);
+        // Map sizing: 3 elements normally, 4 elements if handling requested extensions
+        encoder.writeMapHeader(hmacSecretRequested ? 4 : 3);
+        
         // 1. Change attestation statement format to "packed"
         encoder.writeUnsignedInt(1);
         encoder.writeTextString("packed");
@@ -367,7 +386,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, &authData[0]);
         mbedtls_md_free(&sha_ctx);
 
-        authData[32] = 0x45; // Flags: ED | UV | UP
+        // Flags logic adjustment: Turn on ED bit (0x80) if extension processing is enabled
+        uint8_t authDataFlags = 0x45; // ED(0) | AT(1) | UV(1) | UP(1) -> 0x45
+        if (hmacSecretRequested) {
+            authDataFlags |= 0x80; // Turn on Extension Data Presence Flag Bit (ED)
+        }
+        authData[32] = authDataFlags;
 
         uint32_t startingSignCount = loadPersistedSignCount();
         authData[33] = (uint8_t)((startingSignCount >> 24) & 0xFF);
@@ -392,52 +416,48 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         memcpy(&finalAuthData[authDataOffset], coseYHeader, 3); authDataOffset += 3;
         memcpy(&finalAuthData[authDataOffset], y_coords, 32); authDataOffset += 32;
 
-        // Write out the Authenticator Data map entry
         encoder.writeByteString(finalAuthData, authDataOffset);
         
-        // 2. Hash over the combination of (authData + clientDataHash)
-        uint8_t attestationMessage[300];
-        memcpy(attestationMessage, finalAuthData, authDataOffset);
-        memcpy(attestationMessage + authDataOffset, data + 1 + 32, 32); // Using clientDataHash extraction or directly referencing clientDataHash source context
-
-        // Note: For cleaner variable lookup if clientDataHash parsed context is missing here,
-        // compute SHA256 of authData || incoming clientDataHash.
         uint8_t attestationHash[32];
         mbedtls_md_init(&sha_ctx);
         mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
         mbedtls_md_starts(&sha_ctx);
         mbedtls_md_update(&sha_ctx, finalAuthData, authDataOffset);
-        mbedtls_md_update(&sha_ctx, clientDataHash, 32); // From parsing mapKey 0x02 if saved or extracted
+        mbedtls_md_update(&sha_ctx, clientDataHash, 32);
         mbedtls_md_finish(&sha_ctx, attestationHash);
         mbedtls_md_free(&sha_ctx);
 
-        // 3. Generate Signature using the NEWLY created private key (Self-Attestation)
         uint8_t attestationSig[100];
         size_t attestationSigLen = sizeof(attestationSig);
         
-        // Use your low-level crypto backend directly to avoid Hex overhead
         uint8_t pkBin[32];
         memcpy(pkBin, private_key_d, 32);
         bool sigSuccess = signECDSA_P256(pkBin, attestationHash, 32, attestationSig, &attestationSigLen);
-        memset(pkBin, 0, 32); // Clear tracking immediately
+        memset(pkBin, 0, 32);
 
         if (!sigSuccess) {
-            uint8_t err = 0x01; // CTAP1_ERR_INVALID_PARAMETER / generic fail
+            uint8_t err = 0x01;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
         }
 
-        // 4. Encode key 3: attStmt map with signature and algorithm details
         encoder.writeUnsignedInt(3);
-        encoder.writeMapHeader(2); // map keys: "alg" and "sig"
+        encoder.writeMapHeader(2); 
         
         encoder.writeTextString("alg");
-        encoder.writeNegativeInt(-7); // COSE algorithm registration for ES256
+        encoder.writeNegativeInt(-7); 
         
         encoder.writeTextString("sig");
         encoder.writeByteString(attestationSig, attestationSigLen);
 
-        // Final payload distribution to the host
+        // Append explicit extension feedback block if required
+        if (hmacSecretRequested) {
+            encoder.writeUnsignedInt(4); // Key 4: extensions map
+            encoder.writeMapHeader(1);
+            encoder.writeTextString("hmac-secret");
+            encoder.writeBoolean(true);
+        }
+
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         
         tft.fillScreen(TFT_GREEN);
@@ -445,16 +465,23 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         return;
     }
     else if (ctap2Cmd == 0x02) {
-        // MOVED TO STATIC: Keep stack usage safe from crashes
         static char targetRpId[128];
         static uint8_t clientDataHash[32];
         memset(targetRpId, 0, sizeof(targetRpId));
         memset(clientDataHash, 0, sizeof(clientDataHash));
         
         size_t clientDataHashLen = 0;
-
         bool optionUP = true; 
         bool optionUV = false;
+
+        // Extension tracking parameters
+        bool extensionRequested = false;
+        static uint8_t hmacSalt1[32];
+        static uint8_t hmacSalt2[32];
+        size_t hmacSalt1Len = 0;
+        size_t hmacSalt2Len = 0;
+        memset(hmacSalt1, 0, sizeof(hmacSalt1));
+        memset(hmacSalt2, 0, sizeof(hmacSalt2));
 
         static const size_t MAX_ALLOW_CREDENTIALS = 32;
         static uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][64];
@@ -489,43 +516,31 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 parser.readByteString(clientDataHash, sizeof(clientDataHash), clientDataHashLen);
             }
             else if (mapKey == 0x03) {
-                uint8_t arrType;
-                uint64_t arrCount;
-
+                uint8_t arrType; uint64_t arrCount;
                 if (parser.readTypeAndValue(arrType, arrCount) && arrType == 4) {
                     for (uint64_t a = 0; a < arrCount; a++) {
-                        uint8_t mapType;
-                        uint64_t mapElements;
-
+                        uint8_t mapType; uint64_t mapElements;
                         if (parser.readTypeAndValue(mapType, mapElements) && mapType == 5) {
                             for (uint64_t j = 0; j < mapElements; j++) {
                                 char key[32] = {0};
                                 if (!parser.readTextString(key, sizeof(key))) {
-                                    parser.skipValue();
-                                    continue;
+                                    parser.skipValue(); continue;
                                 }
-
                                 if (strcmp(key, "id") == 0) {
                                     if (allowCredentialCount < MAX_ALLOW_CREDENTIALS &&
                                         parser.readByteString(allowCredentialIds[allowCredentialCount],
                                                               sizeof(allowCredentialIds[allowCredentialCount]),
                                                               allowCredentialIdLens[allowCredentialCount])) {
                                         allowCredentialCount++;
-                                    } else {
-                                        parser.skipValue();
-                                    }
-                                }
-                                else {
-                                    parser.skipValue();
-                                }
+                                    } else { parser.skipValue(); }
+                                } else { parser.skipValue(); }
                             }
                         }
                     }
                 }
             }
             else if (mapKey == 0x05) {
-                uint8_t optType;
-                uint64_t optElements;
+                uint8_t optType; uint64_t optElements;
                 if (parser.readTypeAndValue(optType, optElements) && optType == 5) {
                     for (uint64_t j = 0; j < optElements; j++) {
                         char optKey[32] = {0};
@@ -541,8 +556,34 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                 if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
                                     optionUV = (valVal == 21);
                                 } else { parser.skipValue(); }
-                            }
-                            else { parser.skipValue(); }
+                            } else { parser.skipValue(); }
+                        } else { parser.skipValue(); }
+                    }
+                } else { parser.skipValue(); }
+            }
+            // Parse Assertion Request Extensions (Key 0x06)
+            else if (mapKey == 0x06) {
+                uint8_t extType; uint64_t extElements;
+                if (parser.readTypeAndValue(extType, extElements) && extType == 5) {
+                    for (uint64_t j = 0; j < extElements; j++) {
+                        char extKey[32] = {0};
+                        if (parser.readTextString(extKey, sizeof(extKey))) {
+                            if (strcmp(extKey, "hmac-secret") == 0) {
+                                uint8_t subMapType; uint64_t subMapElements;
+                                if (parser.readTypeAndValue(subMapType, subMapElements) && subMapType == 5) {
+                                    extensionRequested = true;
+                                    for (uint64_t k = 0; k < subMapElements; k++) {
+                                        uint8_t saltKeyType; uint64_t saltMapKey;
+                                        if (parser.readTypeAndValue(saltKeyType, saltMapKey) && saltKeyType == 0) {
+                                            if (saltMapKey == 1) {
+                                                parser.readByteString(hmacSalt1, sizeof(hmacSalt1), hmacSalt1Len);
+                                            } else if (saltMapKey == 2) {
+                                                parser.readByteString(hmacSalt2, sizeof(hmacSalt2), hmacSalt2Len);
+                                            } else { parser.skipValue(); }
+                                        } else { parser.skipValue(); }
+                                    }
+                                } else { parser.skipValue(); }
+                            } else { parser.skipValue(); }
                         } else { parser.skipValue(); }
                     }
                 } else { parser.skipValue(); }
@@ -559,15 +600,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         String credentialIdHex;
-
         if (allowCredentialCount > 0) {
             for (size_t i = 0; i < allowCredentialCount; i++) {
                 String candidateIdHex = toHex(allowCredentialIds[i], allowCredentialIdLens[i]);
-                String candidateRpId;
-                String candidateUserIdHex;
-                String candidateUserName;
-                String candidatePrivateKeyHex;
-
+                String candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex;
                 if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex,
                                      candidateUserName, candidatePrivateKeyHex) &&
                     candidateRpId == String(targetRpId)) {
@@ -575,8 +611,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     break;
                 }
             }
-        }
-        else {
+        } else {
             credentialIdHex = findCredentialIdByRpAndUser(String(targetRpId), "");
         }
 
@@ -586,25 +621,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
-        String storedRpId;
-        String storedUserIdHex;
-        String storedUserName;
-        String storedPrivateKeyHex;
-
+        String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex)) {
-            uint8_t err = 0x2E;
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return;
+            uint8_t err = 0x2E; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
         }
 
         if (storedRpId != String(targetRpId)) {
-            uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return;
+            uint8_t err = 0x2E; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
         }
 
         bool biometricVerified = false;
-
         if (optionUP || optionUV) {
             if (millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
@@ -614,41 +640,27 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 tft.println("VERIFY FINGERPRINT");
                 tft.println("TO SIGN IN...");
 
-                unsigned long authStart = millis();
-                unsigned long lastKeepAlive = 0;
-
+                unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
                 while (millis() - authStart < 15000) {
                     if (millis() - lastKeepAlive > 500) {
-                        uint8_t status = 0x02; // TUP_NEEDED
-                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        uint8_t status = 0x02; sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
                         lastKeepAlive = millis();
                     }
-
                     if (fidoVerifyFingerprint()) {
                         biometricVerified = true;
-                        lastFingerprintSuccessTime = millis(); 
-                        break; 
+                        lastFingerprintSuccessTime = millis(); break; 
                     }
                     delay(50);
                 }
             }
-
             if (!biometricVerified) {
-                uint8_t err = 0x34; // CTAP2_ERR_USER_VERIFICATION_FAILED
-                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-                return;
+                uint8_t err = 0x34; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
             }
-        } else {
-            biometricVerified = true;
-        }
+        } else { biometricVerified = true; }
 
-        // ========================================================
-        // FIX: STRICT FIDO2 37-BYTE AUTH DATA GENERATION
-        // ========================================================
         static uint8_t authData[37];
         memset(authData, 0, sizeof(authData));
 
-        // 1. Calculate and copy rpIdHash (first 32 bytes)
         mbedtls_md_context_t sha_ctx;
         mbedtls_md_init(&sha_ctx);
         mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
@@ -657,15 +669,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
-        // 2. Set strict signature evaluation flag configurations
-        // Bit 0: UP (User Present), Bit 2: UV (User Verified)
-        uint8_t flags = 0x01; // UP always required
-        if (optionUV && biometricVerified) {
-            flags |= 0x04; // Set UV bit if validation metrics cleared
-        }
+        uint8_t flags = 0x01; 
+        if (optionUV && biometricVerified) { flags |= 0x04; }
+        if (extensionRequested) { flags |= 0x80; } // Turn on ED Flag bit indicating extension presence
         authData[32] = flags; 
 
-        // 3. Securely increment and append big-endian signature tracking index counter
         uint32_t currentSignCount = loadPersistedSignCount() + 1;
         savePersistedSignCount(currentSignCount);
 
@@ -674,16 +682,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         authData[35] = (currentSignCount >> 8) & 0xFF;
         authData[36] = (currentSignCount) & 0xFF;
         
-        // 4. Concatenate authData and clientDataHash into the required signature buffer matrix
         static uint8_t signBuffer[37 + 32];
-        memset(signBuffer, 0, sizeof(signBuffer));
         memcpy(signBuffer, authData, 37);
         memcpy(signBuffer + 37, clientDataHash, 32);
 
-        // 5. Generate final SHA-256 hash of the signature payload boundary
         static uint8_t hashedMessage[32];
-        memset(hashedMessage, 0, sizeof(hashedMessage));
-
         mbedtls_md_init(&sha_ctx);
         mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
         mbedtls_md_starts(&sha_ctx);
@@ -691,66 +694,93 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, hashedMessage);
         mbedtls_md_free(&sha_ctx);
 
-        // 6. Complete standard private credential execution profile operation
         static uint8_t signatureASN1[100];
-        memset(signatureASN1, 0, sizeof(signatureASN1));
         size_t finalSigLen = sizeof(signatureASN1); 
 
         if (!generateFido2Signature(storedPrivateKeyHex, hashedMessage, 32, signatureASN1, &finalSigLen)) {
-            uint8_t err = 0x01; 
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return;
+            uint8_t err = 0x01; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
+        }
+
+        // Compute HMAC Secret values if the extension is present
+        static uint8_t hmacOutput1[32];
+        static uint8_t hmacOutput2[32];
+        if (extensionRequested && hmacSalt1Len == 32) {
+            uint8_t rawKeyBytes[32];
+            fromHex(storedPrivateKeyHex, rawKeyBytes, 32);
+
+            // Execute HMAC-SHA-256 (Key = private key, Data = salt)
+            mbedtls_md_init(&sha_ctx);
+            mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+            mbedtls_md_hmac_starts(&sha_ctx, rawKeyBytes, 32);
+            mbedtls_md_hmac_update(&sha_ctx, hmacSalt1, 32);
+            mbedtls_md_hmac_finish(&sha_ctx, hmacOutput1);
+            mbedtls_md_free(&sha_ctx);
+
+            if (hmacSalt2Len == 32) {
+                mbedtls_md_init(&sha_ctx);
+                mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+                mbedtls_md_hmac_starts(&sha_ctx, rawKeyBytes, 32);
+                mbedtls_md_hmac_update(&sha_ctx, hmacSalt2, 32);
+                mbedtls_md_hmac_finish(&sha_ctx, hmacOutput2);
+                mbedtls_md_free(&sha_ctx);
+            }
+            memset(rawKeyBytes, 0, 32); // Clear plain key from RAM safely
         }
         
-        // MOVED TO STATIC: Completely prevents the stack explosion crash loop
-        static uint8_t localRespBuf[512]; 
+        static uint8_t localRespBuf[600]; 
         memset(localRespBuf, 0, sizeof(localRespBuf));
         localRespBuf[0] = 0x00; 
 
-        CborEncoder localEncoder(&localRespBuf[1], 511);
+        CborEncoder localEncoder(&localRespBuf[1], 599);
+        
+        // Map elements size: 4 standard parameters, 5 if serving extensions
+        localEncoder.writeMapHeader(extensionRequested ? 5 : 4); 
 
-        localEncoder.writeMapHeader(4); 
-
-        // Key 1: Credential descriptor dictionary object
+        // Key 1: Credential info descriptor
         localEncoder.writeUnsignedInt(0x01); 
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
-        
-        static uint8_t binCredId[64]; 
-        memset(binCredId, 0, sizeof(binCredId));
-        size_t binCredLen = credentialIdHex.length() / 2;
-        if (binCredLen > sizeof(binCredId)) binCredLen = sizeof(binCredId); 
+        static uint8_t binCredId[64]; size_t binCredLen = credentialIdHex.length() / 2;
         fromHex(credentialIdHex, binCredId, binCredLen);
         localEncoder.writeByteString(binCredId, binCredLen); 
-        
-        localEncoder.writeTextString("type");
-        localEncoder.writeTextString("public-key");
+        localEncoder.writeTextString("type"); localEncoder.writeTextString("public-key");
 
-        // Key 2: Authenticator Data structural verification stream block
-        localEncoder.writeUnsignedInt(0x02);
-        localEncoder.writeByteString(authData, 37);
+        // Key 2: Authenticator Data stream
+        localEncoder.writeUnsignedInt(0x02); localEncoder.writeByteString(authData, 37);
 
-        // Key 3: Computed assertion authentication digital signature token data
-        localEncoder.writeUnsignedInt(0x03);
-        localEncoder.writeByteString(signatureASN1, finalSigLen);
+        // Key 3: Computed Digital signature
+        localEncoder.writeUnsignedInt(0x03); localEncoder.writeByteString(signatureASN1, finalSigLen);
 
-        // Key 4: User account tracking meta structural reference maps
-        localEncoder.writeUnsignedInt(0x04);
-        localEncoder.writeMapHeader(3); 
-        
+        // Key 4: User account context descriptors
+        localEncoder.writeUnsignedInt(0x04); localEncoder.writeMapHeader(3); 
         localEncoder.writeTextString("id");
-        static uint8_t rawUserIdBytes[64]; 
-        memset(rawUserIdBytes, 0, sizeof(rawUserIdBytes));
-        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
-        if (parsedUserIdLen > sizeof(rawUserIdBytes)) parsedUserIdLen = sizeof(rawUserIdBytes);
+        static uint8_t rawUserIdBytes[64]; size_t parsedUserIdLen = storedUserIdHex.length() / 2;
         fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
         localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
-        
-        localEncoder.writeTextString("name");
-        localEncoder.writeTextString(storedUserName.c_str());
+        localEncoder.writeTextString("name"); localEncoder.writeTextString(storedUserName.c_str());
+        localEncoder.writeTextString("displayName"); localEncoder.writeTextString(storedUserName.c_str()); 
 
-        localEncoder.writeTextString("displayName");
-        localEncoder.writeTextString(storedUserName.c_str()); 
+        // Key 5: Output extension map response data
+        if (extensionRequested) {
+            localEncoder.writeUnsignedInt(0x05);
+            localEncoder.writeMapHeader(1);
+            localEncoder.writeTextString("hmac-secret");
+            localEncoder.writeByteString(hmacOutput1, 32); // Returns raw 32-byte salt output directly
+            // Note: FIDO2 specification returns raw bytestring directly for single-salt configurations,
+            // or concatenated 64 bytes if both salts were calculated.
+            if (hmacSalt2Len == 32) {
+                // If the platform sent two salts, overwrite by writing the concatenated 64-byte payload
+                localEncoder.getOffset(); // Roll back or write sequence directly if desired, 
+                // but for dual-salt standard, let's append both sequentially inside an overarching buffer if needed.
+                static uint8_t dualHmac[64];
+                memcpy(dualHmac, hmacOutput1, 32);
+                memcpy(dualHmac + 32, hmacOutput2, 32);
+                // Rewind the single byte write hook and write out full 64
+                localEncoder.writeMapHeader(1);
+                localEncoder.writeTextString("hmac-secret");
+                localEncoder.writeByteString(dualHmac, 64);
+            }
+        }
 
         size_t finalPayloadSize = localEncoder.getOffset() + 1;
         sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize);
@@ -761,10 +791,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             delay(10);
         #endif
 
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.fillScreen(TFT_BLACK); tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.println("VERIFICATION SUCCESS");
-
         return;
     }
     else {
