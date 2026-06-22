@@ -91,7 +91,7 @@ FIDO2HIDDevice::FIDO2HIDDevice() {
 
 void FIDO2HIDDevice::begin() { 
     initializeDynamicAaguid();
-    hid.begin(); 
+    hid.begin();
 }
 
 uint16_t FIDO2HIDDevice::_onGetDescriptor(uint8_t* dst) {
@@ -378,10 +378,17 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         tft.println("PLACE FINGER...");
         
         bool biometricVerified = false;
+        bool biometricCanceled = false;
         unsigned long authStart = millis();
         unsigned long lastKeepAlive = 0;
         
         while (millis() - authStart < 15000) {
+            if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                hasPendingCommand = false; // Consume the packet flag
+                biometricCanceled = true;
+                break;
+            }
+
             if (millis() - lastKeepAlive > 500) {
                 uint8_t status = 0x02; 
                 sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1); 
@@ -393,6 +400,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 break;
             }
             delay(50);
+        }
+
+        // Handle early abort due to browser cancellation
+        if (biometricCanceled) {
+            tft.fillScreen(TFT_BLACK);
+            uint8_t err = 0x2D; // CTAP2_ERR_KEEPALIVE_CANCEL
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            return;
         }
 
         if (!biometricVerified) {
@@ -736,8 +751,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 tft.println("VERIFY FINGERPRINT");
                 tft.println("TO SIGN IN...");
 
+                bool biometricCanceled = false;
                 unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
                 while (millis() - authStart < 15000) {
+                    if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                        hasPendingCommand = false; // Consume the packet flag
+                        biometricCanceled = true;
+                        break;
+                    }
+
                     if (millis() - lastKeepAlive > 500) {
                         uint8_t status = 0x02; sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
                         lastKeepAlive = millis();
@@ -747,6 +769,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                         lastFingerprintSuccessTime = millis(); break; 
                     }
                     delay(50);
+                }
+
+                // Handle early abort due to browser cancellation
+                if (biometricCanceled) {
+                    tft.fillScreen(TFT_BLACK);
+                    uint8_t err = 0x2D; // CTAP2_ERR_KEEPALIVE_CANCEL
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    return;
                 }
             }
             if (!biometricVerified) {
