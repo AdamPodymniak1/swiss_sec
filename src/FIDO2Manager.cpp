@@ -220,6 +220,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         char targetRpId[128] = {0};
+        uint8_t clientDataHash[32] = {0};
+        size_t clientDataHashLen = 0;
         uint8_t userIdRaw[64] = {0};
         size_t userIdLen = 0;
         char userName[128] = {0};
@@ -236,8 +238,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     parser.skipValue(); 
                     continue;
                 }
-
-                if (mapKey == 0x02) { 
+                if (mapKey == 0x01) {
+                    parser.readByteString(clientDataHash, sizeof(clientDataHash), clientDataHashLen);
+                }
+                else if (mapKey == 0x02) { 
                     uint8_t subType; uint64_t subElements;
                     if (parser.readTypeAndValue(subType, subElements) && subType == 5) {
                         for (uint64_t j = 0; j < subElements; j++) {
@@ -271,7 +275,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         }
 
-        if (strlen(targetRpId) == 0 || userIdLen == 0) {
+        if (strlen(targetRpId) == 0 || userIdLen == 0 || clientDataHashLen != 32) {
             uint8_t err = 0x0A; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -348,8 +352,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         CborEncoder encoder(&responseBuffer[1], 511);
 
         encoder.writeMapHeader(3);
+        // 1. Change attestation statement format to "packed"
         encoder.writeUnsignedInt(1);
-        encoder.writeTextString("none");
+        encoder.writeTextString("packed");
 
         encoder.writeUnsignedInt(2);
         uint8_t authData[200] = {0};
@@ -362,7 +367,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, &authData[0]);
         mbedtls_md_free(&sha_ctx);
 
-        authData[32] = 0x45; 
+        authData[32] = 0x45; // Flags: ED | UV | UP
 
         uint32_t startingSignCount = loadPersistedSignCount();
         authData[33] = (uint8_t)((startingSignCount >> 24) & 0xFF);
@@ -380,18 +385,59 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         uint8_t coseYHeader[3]  = {0x22, 0x58, 0x20};
 
         uint8_t finalAuthData[250];
-        int offset = 0;
-        memcpy(&finalAuthData[offset], authData, 71); offset += 71;
-        memcpy(&finalAuthData[offset], coseHeader, 10); offset += 10;
-        memcpy(&finalAuthData[offset], x_coords, 32); offset += 32;
-        memcpy(&finalAuthData[offset], coseYHeader, 3); offset += 3;
-        memcpy(&finalAuthData[offset], y_coords, 32); offset += 32;
+        int authDataOffset = 0;
+        memcpy(&finalAuthData[authDataOffset], authData, 71); authDataOffset += 71;
+        memcpy(&finalAuthData[authDataOffset], coseHeader, 10); authDataOffset += 10;
+        memcpy(&finalAuthData[authDataOffset], x_coords, 32); authDataOffset += 32;
+        memcpy(&finalAuthData[authDataOffset], coseYHeader, 3); authDataOffset += 3;
+        memcpy(&finalAuthData[authDataOffset], y_coords, 32); authDataOffset += 32;
 
-        encoder.writeByteString(finalAuthData, offset);
+        // Write out the Authenticator Data map entry
+        encoder.writeByteString(finalAuthData, authDataOffset);
+        
+        // 2. Hash over the combination of (authData + clientDataHash)
+        uint8_t attestationMessage[300];
+        memcpy(attestationMessage, finalAuthData, authDataOffset);
+        memcpy(attestationMessage + authDataOffset, data + 1 + 32, 32); // Using clientDataHash extraction or directly referencing clientDataHash source context
 
+        // Note: For cleaner variable lookup if clientDataHash parsed context is missing here,
+        // compute SHA256 of authData || incoming clientDataHash.
+        uint8_t attestationHash[32];
+        mbedtls_md_init(&sha_ctx);
+        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+        mbedtls_md_starts(&sha_ctx);
+        mbedtls_md_update(&sha_ctx, finalAuthData, authDataOffset);
+        mbedtls_md_update(&sha_ctx, clientDataHash, 32); // From parsing mapKey 0x02 if saved or extracted
+        mbedtls_md_finish(&sha_ctx, attestationHash);
+        mbedtls_md_free(&sha_ctx);
+
+        // 3. Generate Signature using the NEWLY created private key (Self-Attestation)
+        uint8_t attestationSig[100];
+        size_t attestationSigLen = sizeof(attestationSig);
+        
+        // Use your low-level crypto backend directly to avoid Hex overhead
+        uint8_t pkBin[32];
+        memcpy(pkBin, private_key_d, 32);
+        bool sigSuccess = signECDSA_P256(pkBin, attestationHash, 32, attestationSig, &attestationSigLen);
+        memset(pkBin, 0, 32); // Clear tracking immediately
+
+        if (!sigSuccess) {
+            uint8_t err = 0x01; // CTAP1_ERR_INVALID_PARAMETER / generic fail
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            return;
+        }
+
+        // 4. Encode key 3: attStmt map with signature and algorithm details
         encoder.writeUnsignedInt(3);
-        encoder.writeMapHeader(0);
+        encoder.writeMapHeader(2); // map keys: "alg" and "sig"
+        
+        encoder.writeTextString("alg");
+        encoder.writeNegativeInt(-7); // COSE algorithm registration for ES256
+        
+        encoder.writeTextString("sig");
+        encoder.writeByteString(attestationSig, attestationSigLen);
 
+        // Final payload distribution to the host
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         
         tft.fillScreen(TFT_GREEN);
@@ -573,7 +619,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
                 while (millis() - authStart < 15000) {
                     if (millis() - lastKeepAlive > 500) {
-                        uint8_t status = 0x02; // TUP_NEEDED / Oczekiwanie na użytkownika
+                        uint8_t status = 0x02; // TUP_NEEDED
                         sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
                         lastKeepAlive = millis();
                     }
@@ -596,56 +642,58 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             biometricVerified = true;
         }
 
+        // ========================================================
+        // FIX: STRICT FIDO2 37-BYTE AUTH DATA GENERATION
+        // ========================================================
         static uint8_t authData[37];
         memset(authData, 0, sizeof(authData));
 
-        uint32_t currentSignCount = loadPersistedSignCount();
-        currentSignCount++;
-        savePersistedSignCount(currentSignCount);
-
+        // 1. Calculate and copy rpIdHash (first 32 bytes)
         mbedtls_md_context_t sha_ctx;
         mbedtls_md_init(&sha_ctx);
-
-        const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-
-        mbedtls_md_setup(&sha_ctx, info, 0);
+        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
         mbedtls_md_starts(&sha_ctx);
-
-        static char cleanRpId[128]; // MOVED TO STATIC
-        memset(cleanRpId, 0, sizeof(cleanRpId));
-        strncpy(cleanRpId, targetRpId, sizeof(cleanRpId) - 1);
-
-        mbedtls_md_update(&sha_ctx, (const unsigned char*)cleanRpId, strlen(cleanRpId));
+        mbedtls_md_update(&sha_ctx, (const unsigned char*)targetRpId, strlen(targetRpId));
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
-        authData[32] = 0x05; 
+        // 2. Set strict signature evaluation flag configurations
+        // Bit 0: UP (User Present), Bit 2: UV (User Verified)
+        uint8_t flags = 0x01; // UP always required
+        if (optionUV && biometricVerified) {
+            flags |= 0x04; // Set UV bit if validation metrics cleared
+        }
+        authData[32] = flags; 
+
+        // 3. Securely increment and append big-endian signature tracking index counter
+        uint32_t currentSignCount = loadPersistedSignCount() + 1;
+        savePersistedSignCount(currentSignCount);
 
         authData[33] = (currentSignCount >> 24) & 0xFF;
         authData[34] = (currentSignCount >> 16) & 0xFF;
         authData[35] = (currentSignCount >> 8) & 0xFF;
         authData[36] = (currentSignCount) & 0xFF;
         
-        static uint8_t signBuffer[69];
-        static uint8_t hashedMessage[32];
-        static uint8_t signatureASN1[100];
-
+        // 4. Concatenate authData and clientDataHash into the required signature buffer matrix
+        static uint8_t signBuffer[37 + 32];
         memset(signBuffer, 0, sizeof(signBuffer));
-        memset(hashedMessage, 0, sizeof(hashedMessage));
-        memset(signatureASN1, 0, sizeof(signatureASN1));
-
         memcpy(signBuffer, authData, 37);
         memcpy(signBuffer + 37, clientDataHash, 32);
 
-        mbedtls_md_context_t ctx;
-        mbedtls_md_init(&ctx);
-        const mbedtls_md_info_t* infoSign = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-        mbedtls_md_setup(&ctx, infoSign, 0);
-        mbedtls_md_starts(&ctx);
-        mbedtls_md_update(&ctx, signBuffer, sizeof(signBuffer));
-        mbedtls_md_finish(&ctx, hashedMessage);
-        mbedtls_md_free(&ctx);
+        // 5. Generate final SHA-256 hash of the signature payload boundary
+        static uint8_t hashedMessage[32];
+        memset(hashedMessage, 0, sizeof(hashedMessage));
 
+        mbedtls_md_init(&sha_ctx);
+        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+        mbedtls_md_starts(&sha_ctx);
+        mbedtls_md_update(&sha_ctx, signBuffer, sizeof(signBuffer));
+        mbedtls_md_finish(&sha_ctx, hashedMessage);
+        mbedtls_md_free(&sha_ctx);
+
+        // 6. Complete standard private credential execution profile operation
+        static uint8_t signatureASN1[100];
+        memset(signatureASN1, 0, sizeof(signatureASN1));
         size_t finalSigLen = sizeof(signatureASN1); 
 
         if (!generateFido2Signature(storedPrivateKeyHex, hashedMessage, 32, signatureASN1, &finalSigLen)) {
@@ -663,11 +711,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         localEncoder.writeMapHeader(4); 
 
+        // Key 1: Credential descriptor dictionary object
         localEncoder.writeUnsignedInt(0x01); 
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
         
-        static uint8_t binCredId[64]; // MOVED TO STATIC
+        static uint8_t binCredId[64]; 
         memset(binCredId, 0, sizeof(binCredId));
         size_t binCredLen = credentialIdHex.length() / 2;
         if (binCredLen > sizeof(binCredId)) binCredLen = sizeof(binCredId); 
@@ -677,22 +726,25 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeTextString("type");
         localEncoder.writeTextString("public-key");
 
+        // Key 2: Authenticator Data structural verification stream block
         localEncoder.writeUnsignedInt(0x02);
         localEncoder.writeByteString(authData, 37);
 
+        // Key 3: Computed assertion authentication digital signature token data
         localEncoder.writeUnsignedInt(0x03);
         localEncoder.writeByteString(signatureASN1, finalSigLen);
 
+        // Key 4: User account tracking meta structural reference maps
         localEncoder.writeUnsignedInt(0x04);
         localEncoder.writeMapHeader(3); 
         
         localEncoder.writeTextString("id");
-        static uint8_t rawUserIdBytes[64]; // MOVED TO STATIC
+        static uint8_t rawUserIdBytes[64]; 
         memset(rawUserIdBytes, 0, sizeof(rawUserIdBytes));
-        size_t userIdLen = storedUserIdHex.length() / 2;
-        if (userIdLen > sizeof(rawUserIdBytes)) userIdLen = sizeof(rawUserIdBytes);
-        fromHex(storedUserIdHex, rawUserIdBytes, userIdLen);
-        localEncoder.writeByteString(rawUserIdBytes, userIdLen);
+        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
+        if (parsedUserIdLen > sizeof(rawUserIdBytes)) parsedUserIdLen = sizeof(rawUserIdBytes);
+        fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
+        localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
         
         localEncoder.writeTextString("name");
         localEncoder.writeTextString(storedUserName.c_str());
