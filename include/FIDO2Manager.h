@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <esp_system.h>
 #include "USBHID.h"
 #include "CborEngine.h"
 #include <EEPROM.h>

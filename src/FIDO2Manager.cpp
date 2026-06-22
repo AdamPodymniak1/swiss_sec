@@ -5,6 +5,39 @@
 #include "CryptoManager.h"
 #include "StorageManager.h"
 
+uint8_t dynamicAaguid[16] = {0};
+bool isAaguidInitialized = false;
+
+// Function to derive a unique AAGUID from the device's factory MAC address
+void initializeDynamicAaguid() {
+    if (isAaguidInitialized) return;
+
+    uint8_t mac[6];
+    // Retrieve the factory-fused MAC address (guaranteed unique per chip)
+    if (esp_efuse_mac_get_default(mac) != ESP_OK) {
+        // Fallback placeholder if MAC reading fails
+        memset(mac, 0xAA, 6);
+    }
+
+    // Standard UUIDv4 variant/version bits can be integrated into a fixed prefix
+    // Prefix: Fixed 10-byte namespace identifier
+    dynamicAaguid[0] = 0x4F;
+    dynamicAaguid[1] = 0xA2;
+    dynamicAaguid[2] = 0xB1;
+    dynamicAaguid[3] = 0x3C;
+    dynamicAaguid[4] = 0x7C;
+    dynamicAaguid[5] = 0x89;
+    dynamicAaguid[6] = 0x4E; // UUID version 4 indicators can go here if required
+    dynamicAaguid[7] = 0x5B;
+    dynamicAaguid[8] = 0xBC;
+    dynamicAaguid[9] = 0x6D;
+
+    // Suffix: Append the unique 6-byte hardware MAC address
+    memcpy(&dynamicAaguid[10], mac, 6);
+
+    isAaguidInitialized = true;
+}
+
 uint32_t loadPersistedSignCount() {
     uint32_t count = 0;
     EEPROM.begin(512); 
@@ -57,6 +90,7 @@ FIDO2HIDDevice::FIDO2HIDDevice() {
 }
 
 void FIDO2HIDDevice::begin() { 
+    initializeDynamicAaguid();
     hid.begin(); 
 }
 
@@ -178,11 +212,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("FIDO_2_0");
 
         encoder.writeUnsignedInt(3);
-        uint8_t aaguid[16] = {
-            0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,
-            0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x00
-        };
-        encoder.writeByteString(aaguid, 16);
+        initializeDynamicAaguid();
+        encoder.writeByteString(dynamicAaguid, 16);
 
         encoder.writeUnsignedInt(4);
         encoder.writeMapHeader(3);
@@ -412,8 +443,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         authData[35] = (uint8_t)((startingSignCount >> 8) & 0xFF);
         authData[36] = (uint8_t)(startingSignCount & 0xFF); 
         
-        uint8_t aaguid[16] = {0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x00};
-        memcpy(&authData[37], aaguid, 16);
+        initializeDynamicAaguid();
+        memcpy(&authData[37], dynamicAaguid, 16);
         
         authData[53] = 0x00; authData[54] = 0x10; 
         memcpy(&authData[55], rawCredId, 16);
