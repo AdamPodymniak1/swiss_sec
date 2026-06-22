@@ -332,7 +332,20 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         uint8_t public_key[65] = {0};
 
         if (!generateKeypairP256(private_key_d, public_key)) {
-            uint8_t err = 0x01;
+            // SECURITY FIX: Explicitly clear key material from RAM immediately on failure
+            memset(private_key_d, 0, sizeof(private_key_d));
+            memset(public_key, 0, sizeof(public_key));
+            memset(x_coords, 0, sizeof(x_coords));
+            memset(y_coords, 0, sizeof(y_coords));
+
+            // FALLBACK STATE: Reset the screen UI to an idle/error state
+            tft.fillScreen(TFT_RED);
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.println("REGISTRATION FAILED");
+            delay(2000);
+            tft.fillScreen(TFT_BLACK);
+
+            uint8_t err = 0x01; // CTAP2_ERR_INVALID_COMMAND / GENERIC_ERROR
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
         }
@@ -698,7 +711,21 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t finalSigLen = sizeof(signatureASN1); 
 
         if (!generateFido2Signature(storedPrivateKeyHex, hashedMessage, 32, signatureASN1, &finalSigLen)) {
-            uint8_t err = 0x01; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
+            // SECURITY FIX: Zero out temporary signature calculations and the hashed transaction data
+            memset(signatureASN1, 0, sizeof(signatureASN1));
+            memset(hashedMessage, 0, sizeof(hashedMessage));
+            memset(signBuffer, 0, sizeof(signBuffer));
+
+            // FALLBACK STATE: Reset the screen UI to an idle/error state
+            tft.fillScreen(TFT_RED);
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.println("SIGNING FAILED");
+            delay(2000);
+            tft.fillScreen(TFT_BLACK);
+
+            uint8_t err = 0x01; 
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); 
+            return;
         }
 
         // Compute HMAC Secret values if the extension is present
