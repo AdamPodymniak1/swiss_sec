@@ -819,7 +819,7 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
 
     uint32_t channel = (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
 
-    if (buffer[4] & 0x80) {
+    if (buffer[4] & 0x80) { // Initialization Packet
         uint8_t cmd = buffer[4];
 
         if (hasPendingCommand && channel == pendingChannel) {
@@ -837,7 +837,7 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
         ctapCurrentChannel = channel;
         
         if (ctapExpectedLen > sizeof(ctapBuffer)) {
-            uint8_t err = 0x01; 
+            uint8_t err = 0x01; // CTAPHID_ERR_INVALID_LEN
             sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
             ctapExpectedLen = 0; 
             ctapReceivedLen = 0;
@@ -845,14 +845,22 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
         }
 
         ctapReceivedLen = (ctapExpectedLen > 57) ? 57 : ctapExpectedLen;
+        
+        // Defensive Check: Ensure incoming report has enough bytes for initialization header + data payload
+        if (len < 7 + ctapReceivedLen) {
+            ctapExpectedLen = 0;
+            ctapReceivedLen = 0;
+            return;
+        }
+
         memcpy(ctapBuffer, &buffer[7], ctapReceivedLen);
         ctapExpectedSeq = 0;
     } 
-    else {
+    else { // Continuation Packet
         if (ctapExpectedLen == 0 || channel != ctapCurrentChannel) return;
         
         if (buffer[4] != ctapExpectedSeq) {
-            uint8_t err = 0x04; 
+            uint8_t err = 0x04; // CTAPHID_ERR_INVALID_SEQ
             sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
             ctapExpectedLen = 0; 
             ctapReceivedLen = 0;
@@ -861,15 +869,37 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
         
         ctapExpectedSeq++;
         uint16_t chunk = (ctapExpectedLen - ctapReceivedLen > 59) ? 59 : (ctapExpectedLen - ctapReceivedLen);
+        
+        // SECURITY FIX 1: Prevent writing past the end of ctapBuffer
+        if (ctapReceivedLen + chunk > sizeof(ctapBuffer)) {
+            uint8_t err = 0x01; // CTAPHID_ERR_INVALID_LEN
+            sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
+            ctapExpectedLen = 0; 
+            ctapReceivedLen = 0;
+            return;
+        }
+
+        // SECURITY FIX 2: Prevent reading past the end of the incoming USB report array
+        if (len < 5 + chunk) {
+            uint8_t err = 0x01; 
+            sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
+            ctapExpectedLen = 0; 
+            ctapReceivedLen = 0;
+            return;
+        }
+
         memcpy(ctapBuffer + ctapReceivedLen, &buffer[5], chunk);
         ctapReceivedLen += chunk;
     }
 
     if (ctapExpectedLen > 0 && ctapReceivedLen >= ctapExpectedLen) {
+        // SECURITY FIX 3: Ensure we don't copy more than the physical size of pendingData
+        uint16_t finalCopyLen = (ctapExpectedLen > sizeof(pendingData)) ? sizeof(pendingData) : ctapExpectedLen;
+
         pendingChannel = channel;
         pendingCmd = ctapCurrentCmd;
-        memcpy(pendingData, ctapBuffer, ctapExpectedLen);
-        pendingLen = ctapExpectedLen;
+        memcpy(pendingData, ctapBuffer, finalCopyLen);
+        pendingLen = finalCopyLen;
         hasPendingCommand = true; 
         
         ctapExpectedLen = 0; 
