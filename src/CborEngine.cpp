@@ -133,6 +133,22 @@ bool CborParser::readTypeAndValue(uint8_t &majorType, uint64_t &value) {
         value = ((uint64_t)buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
         return true;
+    } else if (additionalInfo == 26) { // Added 32-bit support required by browsers
+        if (offset + 3 >= length) return false;
+        value = ((uint64_t)buffer[offset] << 24) | ((uint64_t)buffer[offset + 1] << 16) | 
+                ((uint64_t)buffer[offset + 2] << 8) | buffer[offset + 3];
+        offset += 4;
+        return true;
+    } else if (additionalInfo == 27) { // Added 64-bit support
+        if (offset + 7 >= length) return false;
+        value = 0;
+        for (int i = 0; i < 8; i++) {
+            value = (value << 8) | buffer[offset++];
+        }
+        return true;
+    } else if (additionalInfo == 0x1F) { // INDEFINITE LENGTH MARKER
+        value = 0xFFFFFFFFFFFFFFFFULL; // Sentinel value representing indefinite length
+        return true;
     }
     return false;
 }
@@ -183,6 +199,14 @@ bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
 
 // Deep structural skipper to cleanly bypass elements we don't care about
 bool CborParser::skipValue() {
+    if (offset >= length) return false;
+
+    // Direct check for indefinite-length break terminator
+    if (buffer[offset] == 0xFF) {
+        offset++;
+        return true;
+    }
+
     uint8_t majorType;
     uint64_t value;
     if (!readTypeAndValue(majorType, value)) return false;
@@ -191,18 +215,43 @@ bool CborParser::skipValue() {
         case 0: // Unsigned Int
         case 1: // Negative Int
         case 7: // Simple Value / Float
-            return true; // Already consumed by readTypeAndValue
+            return true; 
         case 2: // Byte String
         case 3: // Text String
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite-length string chunk sequence
+                while (offset < length && buffer[offset] != 0xFF) {
+                    if (!skipValue()) return false;
+                }
+                if (offset >= length) return false;
+                offset++; // Consume 0xFF
+                return true;
+            }
             if (offset + value > length) return false;
             offset += value;
             return true;
         case 4: // Array
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite Array
+                while (offset < length && buffer[offset] != 0xFF) {
+                    if (!skipValue()) return false;
+                }
+                if (offset >= length) return false;
+                offset++; // Consume 0xFF
+                return true;
+            }
             for (uint64_t i = 0; i < value; i++) {
                 if (!skipValue()) return false;
             }
             return true;
         case 5: // Map
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite Map
+                while (offset < length && buffer[offset] != 0xFF) {
+                    if (!skipValue()) return false; // Skip Key
+                    if (!skipValue()) return false; // Skip Value
+                }
+                if (offset >= length) return false;
+                offset++; // Consume 0xFF
+                return true;
+            }
             for (uint64_t i = 0; i < value * 2; i++) {
                 if (!skipValue()) return false;
             }

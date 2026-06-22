@@ -31,12 +31,12 @@ public:
 };
 
 class CborParser {
-private:
+public:
     const uint8_t *buffer;
     size_t length;
     size_t offset;
 
-public:
+
     CborParser(const uint8_t *srcBuffer, size_t srcLen) {
         buffer = srcBuffer;
         length = srcLen;

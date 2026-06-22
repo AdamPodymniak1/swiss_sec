@@ -875,6 +875,12 @@ void FIDO2HIDDevice::poll() {
 void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) {
     if (len < 7) return;
 
+    if (ctapExpectedLen > 0 && (millis() - lastPacketTime > 500)) {
+        ctapExpectedLen = 0;
+        ctapReceivedLen = 0;
+        ctapExpectedSeq = 0;
+    }
+
     uint32_t channel = (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
 
     if (buffer[4] & 0x80) { // Initialization Packet
@@ -913,6 +919,8 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
 
         memcpy(ctapBuffer, &buffer[7], ctapReceivedLen);
         ctapExpectedSeq = 0;
+
+        lastPacketTime = millis();
     } 
     else { // Continuation Packet
         if (ctapExpectedLen == 0 || channel != ctapCurrentChannel) return;
@@ -948,6 +956,8 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
 
         memcpy(ctapBuffer + ctapReceivedLen, &buffer[5], chunk);
         ctapReceivedLen += chunk;
+
+        lastPacketTime = millis();
     }
 
     if (ctapExpectedLen > 0 && ctapReceivedLen >= ctapExpectedLen) {

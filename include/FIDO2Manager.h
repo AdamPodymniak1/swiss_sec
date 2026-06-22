@@ -37,6 +37,7 @@ private:
     uint8_t  ctapExpectedSeq = 0;
     uint8_t  ctapCurrentCmd = 0;
     uint32_t ctapCurrentChannel = 0;
+    unsigned long lastPacketTime = 0;
 
 public:
     volatile bool hasPendingCommand = false;
