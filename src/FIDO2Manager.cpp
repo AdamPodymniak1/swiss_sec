@@ -258,6 +258,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         char userName[128] = {0};
         bool hmacSecretRequested = false; // Flag tracking extension support request
 
+        // Track incoming excludeList items
+        static const size_t MAX_EXCLUDE_CREDENTIALS = 16;
+        uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][64];
+        size_t excludeCredentialIdLens[MAX_EXCLUDE_CREDENTIALS] = {0};
+        size_t excludeCredentialCount = 0;
+
         CborParser parser(data + 1, len - 1);
         uint8_t rootType;
         uint64_t rootElements;
@@ -317,6 +323,30 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                         }
                     } else { parser.skipValue(); }
                 }
+                else if (mapKey == 0x05) { // excludeList Array
+                    uint8_t arrType; uint64_t arrCount;
+                    if (parser.readTypeAndValue(arrType, arrCount) && arrType == 4) {
+                        for (uint64_t a = 0; a < arrCount; a++) {
+                            uint8_t mapType; uint64_t mapElements;
+                            if (parser.readTypeAndValue(mapType, mapElements) && mapType == 5) {
+                                for (uint64_t j = 0; j < mapElements; j++) {
+                                    char key[32] = {0};
+                                    if (!parser.readTextString(key, sizeof(key))) {
+                                        parser.skipValue(); continue;
+                                    }
+                                    if (strcmp(key, "id") == 0) {
+                                        if (excludeCredentialCount < MAX_EXCLUDE_CREDENTIALS &&
+                                            parser.readByteString(excludeCredentialIds[excludeCredentialCount],
+                                                                  sizeof(excludeCredentialIds[excludeCredentialCount]),
+                                                                  excludeCredentialIdLens[excludeCredentialCount])) {
+                                            excludeCredentialCount++;
+                                        } else { parser.skipValue(); }
+                                    } else { parser.skipValue(); }
+                                }
+                            } else { parser.skipValue(); }
+                        }
+                    } else { parser.skipValue(); }
+                }
                 else {
                     parser.skipValue(); 
                 }
@@ -327,6 +357,20 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             uint8_t err = 0x0A; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
+        }
+
+        if (excludeCredentialCount > 0) {
+            for (size_t i = 0; i < excludeCredentialCount; i++) {
+                String candidateIdHex = toHex(excludeCredentialIds[i], excludeCredentialIdLens[i]);
+                String dummyRpId, dummyUserId, dummyUser, dummyKey;
+                if (getPasskeyRecord(candidateIdHex, dummyRpId, dummyUserId, dummyUser, dummyKey)) {
+                    if (dummyRpId == String(targetRpId)) {
+                        uint8_t err = 0x19; // CTAP2_ERR_CREDENTIAL_EXCLUDED
+                        sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                        return;
+                    }
+                }
+            }
         }
 
         tft.fillScreen(TFT_YELLOW);
@@ -643,7 +687,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
-        String credentialIdHex;
+        // 🌟 DYNAMIC ALLOWLIST PRE-FLIGHT RESTRICTIONS ENFORCEMENT:
+        String credentialIdHex = "";
         if (allowCredentialCount > 0) {
             for (size_t i = 0; i < allowCredentialCount; i++) {
                 String candidateIdHex = toHex(allowCredentialIds[i], allowCredentialIdLens[i]);
@@ -652,26 +697,33 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                      candidateUserName, candidatePrivateKeyHex) &&
                     candidateRpId == String(targetRpId)) {
                     credentialIdHex = candidateIdHex;
-                    break;
+                    break; // Match found!
                 }
             }
+            
+            // If an allowList was specified by the host but none of those IDs exist locally,
+            // reject IMMEDIUTELY without prompting for biometric authorization.
+            if (credentialIdHex == "") {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                return;
+            }
         } else {
+            // Fallback: search default discoverable/resident credential mapping criteria
             credentialIdHex = findCredentialIdByRpAndUser(String(targetRpId), "");
+            if (credentialIdHex == "") {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                return;
+            }
         }
 
-        if (credentialIdHex == "") {
-            uint8_t err = 0x2E; 
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return;
-        }
-
+        // Now pull full properties safely since credentialIdHex is guaranteed to exist
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex)) {
-            uint8_t err = 0x2E; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
-        }
-
-        if (storedRpId != String(targetRpId)) {
-            uint8_t err = 0x2E; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); return;
+            uint8_t err = 0x2E; 
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); 
+            return;
         }
 
         bool biometricVerified = false;
