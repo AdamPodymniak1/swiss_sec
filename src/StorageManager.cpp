@@ -287,9 +287,7 @@ bool isPasskeyExists(const String &credentialIdHex) {
     return !error && doc[credentialIdHex].is<JsonVariant>();
 }
 
-bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, 
-                       const String &userIdHex, const String &userName, 
-                       const String &privateKeyHex) {
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
     if (!isStorageKeyLoaded) { Terminal.println("[ERR] CODE:STORAGE_KEY_LOCKED"); return false; }
     
     JsonDocument doc;
@@ -321,7 +319,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId,
     }
     
     record["payload"] = encryptedPayload;
-
+    record["alg"] = algId;
     File file = SPIFFS.open("/passkeys.json", "w");
     if (!file) { Terminal.println("[ERR] CODE:FILE_CREATE_FAILED"); return false; }
     
@@ -333,7 +331,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId,
 
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, 
                       String &userIdHexOut, String &userNameOut, 
-                      String &privateKeyHexOut) {
+                      String &privateKeyHexOut, int &algId) {
     if (!isStorageKeyLoaded || !SPIFFS.exists("/passkeys.json")) return false;
 
     File file = SPIFFS.open("/passkeys.json", "r");
@@ -360,7 +358,7 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut,
     userIdHexOut = payloadDoc["uId"].as<String>();
     userNameOut = payloadDoc["uName"].as<String>();
     privateKeyHexOut = payloadDoc["pKey"].as<String>();
-
+    algId = payloadDoc["alg"] | -7;
     return true;
 }
 

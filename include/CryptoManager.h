@@ -40,4 +40,9 @@ extern SecureTerminal Terminal;
 
 bool generateFido2Signature(const String &privateKeyHex, const uint8_t *clientDataHash, size_t hashLen, uint8_t *sigOutBuffer, size_t *sigOutLen);
 
+static int mbedtls_fido2_rng(void *p_rng, unsigned char *output, size_t output_len);
+bool generateEd25519KeyPair(String &privateKeyHexOut, uint8_t *pubKeyXOut);
+bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLen, uint8_t* eOut, size_t* eLen);
+bool generateAlgSignature(int algId, const String &privateKeyHex, const uint8_t *hash, size_t hashLen, uint8_t *sigOut, size_t *sigLen);
+
 #endif

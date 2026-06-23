@@ -5,6 +5,7 @@
 #include "mbedtls/ecdh.h"
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/ecdsa.h"
+#include "mbedtls/pk.h"
 #include "mbedtls/asn1write.h"
 #include "mbedtls/error.h"
 #include "StorageManager.h"
@@ -660,4 +661,145 @@ bool generateFido2Signature(const String& privateKeyHex, const uint8_t* clientDa
     memset(pkBin, 0, sizeof(pkBin));
     
     return success;
+}
+
+static int mbedtls_fido2_rng(void *p_rng, unsigned char *output, size_t output_len) {
+    (void)p_rng;
+    esp_fill_random(output, output_len);
+    return 0;
+}
+
+// Generates an Ed25519 keypair and outputs the private key as hex and the public key as raw bytes
+bool generateEd25519KeyPair(String& privateKeyHexOut, uint8_t* pubKeyXOut) {
+#if defined(MBEDTLS_ECP_DP_ED25519)
+    mbedtls_pk_context ctx;
+    mbedtls_pk_init(&ctx);
+
+    if (mbedtls_pk_setup(&ctx, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0) {
+        mbedtls_pk_free(&ctx);
+        return false;
+    }
+
+    // Generate Ed25519 curve key pair using our corrected RNG wrapper
+    if (mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_ED25519, mbedtls_pk_ec(ctx), mbedtls_fido2_rng, NULL) != 0) {
+        mbedtls_pk_free(&ctx);
+        return false;
+    }
+
+    // Extract private key hex
+    unsigned char privBuf[32];
+    size_t privLen = 0;
+    mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(ctx);
+    mbedtls_mpi_write_binary(&ecp->d, privBuf, 32);
+    
+    privateKeyHexOut = "";
+    for(int i = 0; i < 32; i++) {
+        if(privBuf[i] < 0x10) privateKeyHexOut += "0";
+        privateKeyHexOut += String(privBuf[i], HEX);
+    }
+
+    // Extract public key point X coordinate
+    mbedtls_ecp_point_write_binary(&ecp->grp, &ecp->Q, MBEDTLS_ECP_PF_COMPRESSED, &privLen, pubKeyXOut, 32);
+
+    mbedtls_pk_free(&ctx);
+    return true;
+#else
+    // Fallback if the underlying ESP32 framework config disables Ed25519
+    Serial.println("[ERR] Ed25519 not supported by this ESP32 mbedTLS build config.");
+    return false;
+#endif
+}
+
+// Generates a 2048-bit RSA key pair
+bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLen, uint8_t* eOut, size_t* eLen) {
+    mbedtls_pk_context ctx;
+    mbedtls_pk_init(&ctx);
+
+    if (mbedtls_pk_setup(&ctx, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA)) != 0) {
+        mbedtls_pk_free(&ctx);
+        return false;
+    }
+
+    // Fixed RNG parameter mismatch using our custom wrapper function
+    if (mbedtls_rsa_gen_key(mbedtls_pk_rsa(ctx), mbedtls_fido2_rng, NULL, 2048, 65537) != 0) {
+        mbedtls_pk_free(&ctx);
+        return false;
+    }
+
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(ctx);
+    
+    unsigned char privDer[1500];
+    int len = mbedtls_pk_write_key_der(&ctx, privDer, sizeof(privDer));
+    if (len < 0) {
+        mbedtls_pk_free(&ctx);
+        return false;
+    }
+    
+    unsigned char* p = privDer + sizeof(privDer) - len;
+    privateKeyHexOut = "";
+    for(int i = 0; i < len; i++) {
+        if(p[i] < 0x10) privateKeyHexOut += "0";
+        privateKeyHexOut += String(p[i], HEX);
+    }
+
+    mbedtls_mpi_write_binary(&rsa->N, nOut, 256);
+    *nLen = 256;
+    mbedtls_mpi_write_binary(&rsa->E, eOut, 3);
+    *eLen = 3;
+
+    mbedtls_pk_free(&ctx);
+    return true;
+}
+
+// Algorithm-multiplexed signature routine
+bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* hash, size_t hashLen, uint8_t* sigOut, size_t* sigLen) {
+    if (algId == -7) { // ES256
+        return generateFido2Signature(privateKeyHex, hash, hashLen, sigOut, sigLen);
+    } 
+    else if (algId == -8) { // EdDSA
+#if defined(MBEDTLS_ECP_DP_ED25519)
+        uint8_t privBin[32];
+        for (size_t i = 0; i < 32; i++) {
+            privBin[i] = strtol(privateKeyHex.substring(i*2, i*2+2).c_str(), NULL, 16);
+        }
+
+        mbedtls_pk_context ctx;
+        mbedtls_pk_init(&ctx);
+        mbedtls_pk_setup(&ctx, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+        mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(ctx);
+        mbedtls_ecp_group_load(&ecp->grp, MBEDTLS_ECP_DP_ED25519);
+        mbedtls_mpi_read_binary(&ecp->d, privBin, 32);
+        
+        size_t slen = 0;
+        int ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_NONE, hash, hashLen, sigOut, &slen, mbedtls_fido2_rng, NULL);
+        *sigLen = slen;
+        mbedtls_pk_free(&ctx);
+        return (ret == 0);
+#else
+        return false;
+#endif
+    }
+    else if (algId == -257) { // RS256
+        size_t derLen = privateKeyHex.length() / 2;
+        uint8_t* derBuf = (uint8_t*)malloc(derLen);
+        for (size_t i = 0; i < derLen; i++) {
+            derBuf[i] = strtol(privateKeyHex.substring(i*2, i*2+2).c_str(), NULL, 16);
+        }
+
+        mbedtls_pk_context ctx;
+        mbedtls_pk_init(&ctx);
+        int ret = mbedtls_pk_parse_key(&ctx, derBuf, derLen, NULL, 0);
+        free(derBuf);
+        if (ret != 0) {
+            mbedtls_pk_free(&ctx);
+            return false;
+        }
+
+        size_t slen = 0;
+        ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, hashLen, sigOut, &slen, mbedtls_fido2_rng, NULL);
+        *sigLen = slen;
+        mbedtls_pk_free(&ctx);
+        return (ret == 0);
+    }
+    return false;
 }
