@@ -1,17 +1,11 @@
 // DisplayManager.h
-#pragma once
-#define LGFX_USE_V1
-#include <LovyanGFX.hpp>
+#ifndef DISPLAY_MANAGER_H
+#define DISPLAY_MANAGER_H
 
-#define TFT_BLACK       0x0000
-#define TFT_WHITE       0xFFFF
+#include <U8g2lib.h>
+#include <SPI.h>
 
-class LGFX : public lgfx::LGFX_Device {
-    lgfx::Panel_SSD1306 _panel_instance;
-    lgfx::Bus_SPI       _bus_instance;
+// Global declaration for the U8g2 display object so it can be accessed in other files
+extern U8G2_SSD1306_128X32_UNIVISION_F_4W_SW_SPI u8g2;
 
-public:
-    LGFX(void);
-};
-
-extern LGFX tft;
+#endif // DISPLAY_MANAGER_H

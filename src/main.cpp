@@ -22,13 +22,11 @@ void setup() {
         neopixelWrite(RGB_BUILTIN, 0, 0, 0);
     #endif
 
-    tft.init();
-    tft.setRotation(1); 
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(1);
-    tft.setCursor(0, 0);
-    tft.println("BOOTING...");
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "BOOTING...");
+    u8g2.sendBuffer();
 
     Serial.begin(115200);
     FidoHID.begin();
@@ -45,17 +43,19 @@ void setup() {
 
     if (!initStorage()) {
         Serial.println("[SYS] ERR:SPIFFS_MOUNT_FAILED");
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("SPIFFS FAILED");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "SPIFFS FAILED");
+        u8g2.sendBuffer();
         return;
     }
 
     initFingerprintSensor();
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Awaiting Auth...");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "AWAITING AUTH");
+    u8g2.sendBuffer();
 }
 
 void loop() {
@@ -88,9 +88,10 @@ void loop() {
         authenticated = false;
         clearStorageKey();
         currentCommandState = STATE_READY;
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("Awaiting Auth...");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "AWAITING AUTH");
+        u8g2.sendBuffer();
         Terminal.println("[SYS] STATUS:BOOT");
         if (!isMasterPinSet()) {
             Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
@@ -108,9 +109,10 @@ void loop() {
         encryptionActive = false;
         clearStorageKey();
         currentCommandState = STATE_READY;
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("Disconnected.");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "DISCONNECTED");
+        u8g2.sendBuffer();
         Terminal.println("[SYS] STATUS:DISCONNECTED");
         Terminal.flush();
         return;
@@ -150,9 +152,10 @@ void loop() {
             deriveStorageKey(input); 
             resetFailedMasterAttempts(); 
             
-            tft.fillScreen(TFT_BLACK);
-            tft.setCursor(0, 0);
-            tft.println("Access Granted");
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(0, 15, "ACCESS GRANTED");
+            u8g2.sendBuffer();
             
             Terminal.println("[AUTH] STATUS:SUCCESS");
             Terminal.println("[SYS] STATUS:READY");
@@ -164,14 +167,19 @@ void loop() {
                 authenticated = false;
                 currentCommandState = STATE_READY;
                 
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println("MASTER RESET");
-                tft.println("Wiping vault...");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "MASTER RESET");
+                u8g2.drawStr(0, 30, "WIPING VAULT");
+                u8g2.sendBuffer();
                 
-                clearAllStoredPasswords(); 
+                clearAllStoredPasswords();
+
                 
-                tft.println("Wiped!");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "WIPED");
+                u8g2.sendBuffer();
                 
                 Terminal.println("[AUTH] STATUS:MASTER_RESET_SUCCESS_VAULT_PURGED");
                 Terminal.flush();
@@ -239,9 +247,10 @@ void loop() {
                     authenticated = false;
                     Terminal.println("[AUTH] STATUS:MASTER_PIN_DELETED");
                     
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setCursor(0, 0);
-                    tft.println("Wiping Hardware");
+                    u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "WIPING HARDWARE");
+                    u8g2.sendBuffer();
                     
                     finger.emptyDatabase(); 
                     Terminal.println("[SYS] FINGERPRINT DATABASE WIPED");
@@ -252,10 +261,11 @@ void loop() {
                     } else {
                         Terminal.println("[ERR] HARDWARE ENROLLMENT FAILED");
                     }
-
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setCursor(0, 0);
-                    tft.println("Awaiting Auth");
+                    
+                    u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "AWAITING AUTH");
+                    u8g2.sendBuffer();
 
                     Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
                 } else {
@@ -263,18 +273,20 @@ void loop() {
                 }
             }
             else if (input == "delete_pass") {
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println("PURGING VAULT");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "PURGING VAULT");
+                u8g2.sendBuffer();
                 
                 clearAllStoredPasswords();
                 
                 Terminal.println("[SYS] VAULT PURGE SUCCESSFUL: ALL LOGINS & PASSKEYS WIPE COMPLETE");
                 delay(1000);
 
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println("Awaiting Auth");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "AWAITING AUTH");
+                u8g2.sendBuffer();
             }
             else if (input == "diagnostics") {
                 runFullSystemDiagnostics();
@@ -326,10 +338,11 @@ void loop() {
             if (pw.length() > 0) {
                 pendingPasswordToTransmit = pw; 
                 
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println(input);
-                tft.println("Scan finger");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 14, "GETTING:");
+                u8g2.drawStr(0, 28, input.c_str());
+                u8g2.sendBuffer();
 
                 Terminal.println("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL");
                 currentCommandState = STATE_AWAITING_FINGERPRINT;

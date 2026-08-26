@@ -17,9 +17,10 @@ void initFingerprintSensor() {
     if (finger.verifyPassword()) {
         Serial.println("READY");
     } else {
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("SENSOR ERROR!");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "SENSOR ERROR!");
+        u8g2.sendBuffer();
         delay(2000);
     }
 #endif
@@ -27,28 +28,32 @@ void initFingerprintSensor() {
 
 bool enrollFingerprint(uint8_t id) {
 #if USE_FINGERPRINT_SIMULATOR
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Press Button 1");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "Press Button 1");
+    u8g2.sendBuffer();
     while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { delay(50); }
     while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(50); }
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Press Button 2");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "Press Button 2");
+    u8g2.sendBuffer();
     while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { delay(50); }
     while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(50); }
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("STORED OK");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "STORED OK");
+    u8g2.sendBuffer();
     delay(2000);
     return true;
 #else
     int p = -1;
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Place finger");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "Place finger");
+    u8g2.sendBuffer();
 
     while (p != FINGERPRINT_OK) {
         p = finger.getImage();
@@ -60,10 +65,10 @@ bool enrollFingerprint(uint8_t id) {
     p = finger.image2Tz(1);
     if (p != FINGERPRINT_OK) return false;
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Remove finger");
-    
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "Remove finger");
+    u8g2.sendBuffer();
     delay(1500); 
     p = 0;
     while (p != FINGERPRINT_NOFINGER) {
@@ -71,10 +76,11 @@ bool enrollFingerprint(uint8_t id) {
         delay(50);
     }
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("Place SAME");
-    tft.println("finger again");
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "Place SAME");
+    u8g2.drawStr(0, 30, "finger again");
+    u8g2.sendBuffer();
 
     p = -1;
     while (p != FINGERPRINT_OK) {
@@ -89,18 +95,20 @@ bool enrollFingerprint(uint8_t id) {
 
     p = finger.createModel();
     if (p != FINGERPRINT_OK) {
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("MISMATCH!");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "MISMATCH!");
+        u8g2.sendBuffer();
         delay(3000);
         return false;
     }
 
     p = finger.storeModel(id);
     if (p == FINGERPRINT_OK) {
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("STORED OK!");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "STORED OK");
+        u8g2.sendBuffer();
         delay(2000);
         return true;
     } else {
@@ -126,16 +134,18 @@ void updateFingerprintAsync() {
         pendingPasswordToTransmit = "";
         currentCommandState = STATE_READY;
         
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("TRANSMITTED!");
-        
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "TRANSMITTED!");
+        u8g2.sendBuffer();
+
         unsigned long startWait = millis();
         while (millis() - startWait < 1200) { yield(); }
         
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("Logged In");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "Logged In");
+        u8g2.sendBuffer();
     }
 #else
     uint8_t imageResult = finger.getImage();
@@ -166,26 +176,31 @@ void updateFingerprintAsync() {
                     pendingPasswordToTransmit = ""; 
                     currentCommandState = STATE_READY;
                     
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setCursor(0, 0);
-                    tft.println("TRANSMITTED!");
-                    
+                    u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "TRANSMITTED!");
+                    u8g2.sendBuffer();
+
                     unsigned long startWait = millis();
                     while (millis() - startWait < 1200) { yield(); }
                     
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setCursor(0, 0);
-                    tft.println("Logged In");
+                    u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "Logged In");
+                    u8g2.sendBuffer();
                 } else {
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setCursor(0, 0);
-                    tft.println("Try again");
+                    u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "Try again");
+                    u8g2.sendBuffer();
                     delay(1000);
                 }
             } else {
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println("Unknown Finger");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "Unknown Finger");
+                u8g2.sendBuffer();
+                delay(1000);
                 delay(1000);
             }
         } else {

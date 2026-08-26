@@ -426,9 +426,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         }
 
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("PLACE FINGER");
+        
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "PLACE FINGER");
+        u8g2.sendBuffer();
         
         bool biometricVerified = false;
         bool biometricCanceled = false;
@@ -456,13 +458,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (biometricCanceled) {
-            tft.fillScreen(TFT_BLACK);
+            u8g2.clearBuffer();
             uint8_t err = 0x2D; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
         }
 
         if (!biometricVerified) {
+            u8g2.clearBuffer();
             uint8_t err = 0x34; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -491,11 +494,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (!keygenSuccess) {
-            tft.fillScreen(TFT_BLACK);
-            tft.setCursor(0, 0);
-            tft.println("REG FAILED");
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(0, 15, "REG FAILED");
+            u8g2.sendBuffer();
             delay(2000);
-            tft.fillScreen(TFT_BLACK);
+            u8g2.clearBuffer();
             uint8_t err = 0x01; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -622,9 +626,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("REG SUCCESS");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "REG SUCCESS");
+        u8g2.sendBuffer();
         return;
     }
     else if (ctap2Cmd == 0x02) {
@@ -808,9 +813,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             if (millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
             } else {
-                tft.fillScreen(TFT_BLACK);
-                tft.setCursor(0, 0);
-                tft.println("VERIFY FINGER");
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 15, "VERIFY FINGER");
+                u8g2.sendBuffer();
 
                 bool biometricCanceled = false;
                 unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
@@ -834,7 +840,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
                 // Handle early abort due to browser cancellation
                 if (biometricCanceled) {
-                    tft.fillScreen(TFT_BLACK);
+                    u8g2.clearBuffer();
                     uint8_t err = 0x2D; // CTAP2_ERR_KEEPALIVE_CANCEL
                     sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                     return;
@@ -889,11 +895,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             memset(hashedMessage, 0, sizeof(hashedMessage));
             memset(signBuffer, 0, sizeof(signBuffer));
 
-            tft.fillScreen(TFT_BLACK);
-            tft.setCursor(0, 0);
-            tft.println("SIGN FAILED");
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(0, 15, "SIGN FAILED");
+            u8g2.sendBuffer();
             delay(2000);
-            tft.fillScreen(TFT_BLACK);
+            u8g2.clearBuffer();
 
             uint8_t err = 0x01; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); 
@@ -991,9 +998,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             delay(10);
         #endif
 
-        tft.fillScreen(TFT_BLACK);
-        tft.setCursor(0, 0);
-        tft.println("VERIFIED");
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(0, 15, "VERIFIED");
+        u8g2.sendBuffer();
         return;
     }
     else {

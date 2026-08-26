@@ -111,15 +111,17 @@ bool testStorageSubsystem() {
 }
 
 bool testDisplaySubsystem() {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.print("TEST");
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "TEST");
+    u8g2.sendBuffer();
     delay(300); 
-    tft.fillScreen(TFT_WHITE);
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.setCursor(0, 0);
-    tft.print("TEST");
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "TEST");
+    u8g2.sendBuffer();
     delay(300); 
 
     printTestResult("Hardware: LovyanGFX Panel Rendering Pipeline", true);
@@ -151,9 +153,11 @@ void runFullSystemDiagnostics() {
     Serial.println("[DIAGNOSTICS] INITIATING FULL HARDWARE & SOFTWARE TESTS");
     Serial.println("====================================================");
     
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
-    tft.println("DIAGNOSTICS");
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    u8g2.drawStr(0, 15, "DIAGNOSTICS");
+    u8g2.sendBuffer();
 
     int totalTestsPassed = 0;
 
@@ -168,11 +172,13 @@ void runFullSystemDiagnostics() {
     Serial.println("/4");
     Serial.println("====================================================\n");
 
-    tft.fillScreen(TFT_BLACK);
-    tft.setCursor(0, 0);
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB08_tr);
     if (authenticated) {
-        tft.println("Logged In");
+        u8g2.drawStr(0, 15, "Logged In");
     } else {
-        tft.println("Awaiting Auth");
+        u8g2.drawStr(0, 15, "Awaiting Auth");
     }
+    u8g2.sendBuffer();
 }
