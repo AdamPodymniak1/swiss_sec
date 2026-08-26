@@ -53,17 +53,23 @@ void savePersistedSignCount(uint32_t count) {
 }
 
 bool fidoVerifyFingerprint() {
+#if USE_FINGERPRINT_SIMULATOR
+    if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
+        while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(10); }
+        return true;
+    }
+    return false;
+#else
     uint8_t img = finger.getImage();
-
     for (uint8_t retry = 0; retry < 3 && img != FINGERPRINT_OK && img != FINGERPRINT_NOFINGER; retry++) {
         delay(50);
         img = finger.getImage();
     }
-
     if (img != FINGERPRINT_OK) return false;              
     if (finger.image2Tz() != FINGERPRINT_OK) return false;
     if (finger.fingerSearch() != FINGERPRINT_OK) return false;
-    return finger.confidence > 50;                        
+    return finger.confidence > 50;
+#endif
 }
 
 const uint8_t fido_report_descriptor[34] = {
@@ -420,9 +426,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         }
 
-        tft.fillScreen(TFT_YELLOW);
-        tft.setCursor(10, 20);
-        tft.println("PLACE FINGER...");
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.println("PLACE FINGER");
         
         bool biometricVerified = false;
         bool biometricCanceled = false;
@@ -485,8 +491,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (!keygenSuccess) {
-            tft.fillScreen(TFT_RED);
-            tft.println("REGISTRATION FAILED");
+            tft.fillScreen(TFT_BLACK);
+            tft.setCursor(0, 0);
+            tft.println("REG FAILED");
             delay(2000);
             tft.fillScreen(TFT_BLACK);
             uint8_t err = 0x01; 
@@ -615,8 +622,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
-        tft.fillScreen(TFT_GREEN);
-        tft.println("REGISTERED SUCCESS!");
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.println("REG SUCCESS");
         return;
     }
     else if (ctap2Cmd == 0x02) {
@@ -800,10 +808,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             if (millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
             } else {
-                tft.fillScreen(TFT_YELLOW);
-                tft.setCursor(10, 20);
-                tft.println("VERIFY FINGERPRINT");
-                tft.println("TO SIGN IN...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setCursor(0, 0);
+                tft.println("VERIFY FINGER");
 
                 bool biometricCanceled = false;
                 unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
@@ -878,15 +885,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t finalSigLen = sizeof(signatureASN1); 
 
         if (!generateAlgSignature(storedAlgId, storedPrivateKeyHex, hashedMessage, 32, signatureASN1, &finalSigLen)) {
-            // SECURITY FIX: Zero out temporary signature calculations and the hashed transaction data
             memset(signatureASN1, 0, sizeof(signatureASN1));
             memset(hashedMessage, 0, sizeof(hashedMessage));
             memset(signBuffer, 0, sizeof(signBuffer));
 
-            // FALLBACK STATE: Reset the screen UI to an idle/error state
-            tft.fillScreen(TFT_RED);
-            tft.setTextColor(TFT_WHITE, TFT_RED);
-            tft.println("SIGNING FAILED");
+            tft.fillScreen(TFT_BLACK);
+            tft.setCursor(0, 0);
+            tft.println("SIGN FAILED");
             delay(2000);
             tft.fillScreen(TFT_BLACK);
 
@@ -986,8 +991,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             delay(10);
         #endif
 
-        tft.fillScreen(TFT_BLACK); tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.println("VERIFICATION SUCCESS");
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.println("VERIFIED");
         return;
     }
     else {

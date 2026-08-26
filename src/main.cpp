@@ -1,3 +1,4 @@
+// main.cpp
 #include <Arduino.h>
 #include "Globals.h"
 #include "DisplayManager.h"
@@ -25,20 +26,17 @@ void setup() {
     tft.setRotation(1); 
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.setTextSize(2);
-    tft.setCursor(10, 20);
-    tft.println("[SYS] BOOTING...");
+    tft.setTextSize(1);
+    tft.setCursor(0, 0);
+    tft.println("BOOTING...");
 
-    // Fire up the multi-interface USB device stack layers concurrently
     Serial.begin(115200);
     FidoHID.begin();
     USB.begin();
 
-    // Give the USB CDC driver a solid chance to lock tracking frequencies
     unsigned long startMillis = millis();
     while (!Serial && (millis() - startMillis < 4000)) delay(10);
 
-    // Clear serial rings completely before initial crypto sequences kick off
     delay(200);
     Serial.flush();
     while(Serial.available() > 0) { Serial.read(); }
@@ -47,8 +45,8 @@ void setup() {
 
     if (!initStorage()) {
         Serial.println("[SYS] ERR:SPIFFS_MOUNT_FAILED");
-        tft.fillScreen(TFT_RED);
-        tft.setCursor(10, 20);
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
         tft.println("SPIFFS FAILED");
         return;
     }
@@ -56,23 +54,20 @@ void setup() {
     initFingerprintSensor();
 
     tft.fillScreen(TFT_BLACK);
-    tft.setCursor(10, 20);
+    tft.setCursor(0, 0);
     tft.println("Awaiting Auth...");
 }
 
 void loop() {
     FidoHID.poll();
-    // Check asynchronous hardware sensors first
     updateFingerprintAsync();
 
-    // Early exit out of serial processing pipeline if frame buffers are empty
     if (!Serial.available()) return;
 
     String rawInput = Serial.readStringUntil('\n');
     rawInput.trim();
     String input = rawInput;
 
-    // Global Check: Handshake evaluation engine
     if (rawInput.startsWith("DH_INIT:")) {
         processHandshake(rawInput.substring(8));
         authenticated = false;
@@ -81,22 +76,20 @@ void loop() {
         return;
     }
 
-    // Secure Decryption Layer
     if (rawInput.startsWith("ENC:")) {
         input = decryptMsg(rawInput);
         if (input == "") return; 
     }
     else if (encryptionActive) {
-        return; // Drop unencrypted frames if encryption state engine demands tunnel enforcement
+        return; 
     }
 
-    // Global Administrative Interrupt Framework
     if (input == "RESTART_SYSTEM") {
         authenticated = false;
         clearStorageKey();
         currentCommandState = STATE_READY;
         tft.fillScreen(TFT_BLACK);
-        tft.setCursor(10, 20);
+        tft.setCursor(0, 0);
         tft.println("Awaiting Auth...");
         Terminal.println("[SYS] STATUS:BOOT");
         if (!isMasterPinSet()) {
@@ -116,14 +109,13 @@ void loop() {
         clearStorageKey();
         currentCommandState = STATE_READY;
         tft.fillScreen(TFT_BLACK);
-        tft.setCursor(10, 20);
+        tft.setCursor(0, 0);
         tft.println("Disconnected.");
         Terminal.println("[SYS] STATUS:DISCONNECTED");
         Terminal.flush();
         return;
     }
 
-    // INITIAL PIN / MASTER PIN ENFORCEMENT ENGINE
     if (!isMasterPinSet()) {
         if (currentCommandState != STATE_AWAITING_MASTER_PIN_SETUP) {
             Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
@@ -159,8 +151,8 @@ void loop() {
             resetFailedMasterAttempts(); 
             
             tft.fillScreen(TFT_BLACK);
-            tft.setCursor(10, 20);
-            tft.println("Access Granted.");
+            tft.setCursor(0, 0);
+            tft.println("Access Granted");
             
             Terminal.println("[AUTH] STATUS:SUCCESS");
             Terminal.println("[SYS] STATUS:READY");
@@ -172,16 +164,14 @@ void loop() {
                 authenticated = false;
                 currentCommandState = STATE_READY;
                 
-                tft.fillScreen(TFT_RED);
-                tft.setTextColor(TFT_WHITE, TFT_RED);
-                tft.setCursor(10, 20);
-                tft.println("MASTER RESET TRIGGERED");
-                tft.println("Wiping vault database...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setCursor(0, 0);
+                tft.println("MASTER RESET");
+                tft.println("Wiping vault...");
                 
                 clearAllStoredPasswords(); 
                 
-                tft.println("Vault wiped successfully!");
-                tft.println("Rebooting system...");
+                tft.println("Wiped!");
                 
                 Terminal.println("[AUTH] STATUS:MASTER_RESET_SUCCESS_VAULT_PURGED");
                 Terminal.flush();
@@ -201,9 +191,7 @@ void loop() {
         }
     }
 
-    // ASYNCHRONOUS STATE MACHINE COMMAND PROCESSING
     switch (currentCommandState) {
-        
         case STATE_READY:
             if (input == "help") {
                 Terminal.println("\n================ AVAILABLE COMMANDS ================");
@@ -251,10 +239,9 @@ void loop() {
                     authenticated = false;
                     Terminal.println("[AUTH] STATUS:MASTER_PIN_DELETED");
                     
-                    tft.fillScreen(TFT_NAVY);
-                    tft.setTextColor(TFT_WHITE, TFT_NAVY);
-                    tft.setCursor(10, 20);
-                    tft.println("Wiping Hardware...");
+                    tft.fillScreen(TFT_BLACK);
+                    tft.setCursor(0, 0);
+                    tft.println("Wiping Hardware");
                     
                     finger.emptyDatabase(); 
                     Terminal.println("[SYS] FINGERPRINT DATABASE WIPED");
@@ -267,9 +254,8 @@ void loop() {
                     }
 
                     tft.fillScreen(TFT_BLACK);
-                    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-                    tft.setCursor(10, 20);
-                    tft.println("Awaiting Auth...");
+                    tft.setCursor(0, 0);
+                    tft.println("Awaiting Auth");
 
                     Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
                 } else {
@@ -277,10 +263,9 @@ void loop() {
                 }
             }
             else if (input == "delete_pass") {
-                tft.fillScreen(TFT_RED);
-                tft.setTextColor(TFT_WHITE, TFT_RED);
-                tft.setCursor(10, 20);
-                tft.println("PURGING VAULT...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setCursor(0, 0);
+                tft.println("PURGING VAULT");
                 
                 clearAllStoredPasswords();
                 
@@ -288,9 +273,8 @@ void loop() {
                 delay(1000);
 
                 tft.fillScreen(TFT_BLACK);
-                tft.setTextColor(TFT_WHITE, TFT_BLACK);
-                tft.setCursor(10, 20);
-                tft.println("Awaiting Auth...");
+                tft.setCursor(0, 0);
+                tft.println("Awaiting Auth");
             }
             else if (input == "diagnostics") {
                 runFullSystemDiagnostics();
@@ -342,22 +326,10 @@ void loop() {
             if (pw.length() > 0) {
                 pendingPasswordToTransmit = pw; 
                 
-                tft.fillScreen(TFT_NAVY);
-                tft.setTextColor(TFT_WHITE, TFT_NAVY);
-                tft.setCursor(10, 15);
-                tft.println("REQUEST CONFIRMATION:");
-                
-                tft.setTextColor(TFT_YELLOW, TFT_NAVY);
-                tft.setTextSize(3);
-                tft.setCursor(10, 55);
-                tft.println(input); 
-                
-                tft.setTextSize(2);
-                tft.setTextColor(TFT_WHITE, TFT_NAVY);
-                tft.setCursor(10, 130);
-                tft.println("Scan fingerprint");
-                tft.println("to authorize serial");
-                tft.println("transfer...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setCursor(0, 0);
+                tft.println(input);
+                tft.println("Scan finger");
 
                 Terminal.println("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL");
                 currentCommandState = STATE_AWAITING_FINGERPRINT;

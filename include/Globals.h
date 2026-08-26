@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
+#define USE_FINGERPRINT_SIMULATOR 1
+#define SIMULATOR_BUTTON_PIN 4
+
 // Define clean system states for our non-blocking flow
 enum SystemState {
     STATE_READY,
