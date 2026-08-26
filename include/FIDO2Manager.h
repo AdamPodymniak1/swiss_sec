@@ -55,6 +55,7 @@ public:
     void processCborCommand(uint32_t channel, uint8_t* data, uint16_t len);
     void poll();
     void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) override;
+    void processU2fCommand(uint32_t channel, uint8_t* data, uint16_t len);
 };
 
 extern FIDO2HIDDevice FidoHID;

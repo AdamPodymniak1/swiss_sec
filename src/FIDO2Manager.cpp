@@ -151,6 +151,172 @@ void FIDO2HIDDevice::sendCtapResponse(uint32_t channel, uint8_t cmd, const uint8
     }
 }
 
+void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t len) {
+    if (len < 4) {
+        uint8_t err[] = {0x67, 0x00};
+        sendCtapResponse(channel, 0x03, err, 2);
+        return;
+    }
+
+    uint8_t ins = data[1];
+    uint8_t p1 = data[2];
+
+    if (ins == 0x03) {
+        uint8_t resp[] = {'U', '2', 'F', '_', 'V', '2', 0x90, 0x00};
+        sendCtapResponse(channel, 0x03, resp, 8);
+        return;
+    }
+
+    if (len < 7) {
+        uint8_t err[] = {0x67, 0x00};
+        sendCtapResponse(channel, 0x03, err, 2);
+        return;
+    }
+
+    uint16_t reqLen = (data[5] << 8) | data[6];
+    uint8_t* payload = &data[7];
+
+    if (ins == 0x01) {
+        if (reqLen != 64 || !authenticated || !fidoVerifyFingerprint()) {
+            uint8_t err[] = {0x69, 0x85};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint8_t privKey[32];
+        uint8_t pubKey[65];
+        if (!generateKeypairP256(privKey, pubKey)) {
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint8_t kh[16];
+        esp_fill_random(kh, 16);
+        String khHex = toHex(kh, 16);
+        String appIdHex = toHex(payload + 32, 32);
+        String privHex = toHex(privKey, 32);
+
+        savePasskeyRecord(khHex, appIdHex, "", "", privHex, -7);
+
+        uint8_t sigData[150];
+        sigData[0] = 0x00;
+        memcpy(sigData + 1, payload + 32, 32);
+        memcpy(sigData + 33, payload, 32);
+        memcpy(sigData + 65, kh, 16);
+        memcpy(sigData + 81, pubKey, 65);
+        
+        uint8_t hash[32];
+        mbedtls_md_context_t ctx;
+        mbedtls_md_init(&ctx);
+        mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+        mbedtls_md_starts(&ctx);
+        mbedtls_md_update(&ctx, sigData, 146);
+        mbedtls_md_finish(&ctx, hash);
+        mbedtls_md_free(&ctx);
+
+        uint8_t sig[100];
+        size_t sigLen = sizeof(sig);
+        if (!generateAlgSignature(-7, privHex, hash, 32, sig, &sigLen)) {
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint8_t resp[300];
+        resp[0] = 0x05;
+        memcpy(&resp[1], pubKey, 65);
+        resp[66] = 16;
+        memcpy(&resp[67], kh, 16);
+        
+        uint8_t dummyCert[] = {0x30, 0x82, 0x01, 0x13};
+        memcpy(&resp[83], dummyCert, 4);
+        
+        memcpy(&resp[87], sig, sigLen);
+        resp[87 + sigLen] = 0x90;
+        resp[88 + sigLen] = 0x00;
+
+        sendCtapResponse(channel, 0x03, resp, 89 + sigLen);
+    }
+    else if (ins == 0x02) {
+        if (reqLen < 65) {
+            uint8_t err[] = {0x67, 0x00};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint8_t khLen = payload[64];
+        String khHex = toHex(payload + 65, khLen);
+        String appIdHex = toHex(payload + 32, 32);
+
+        String storedAppId, dummyUser, dummyName, privHex;
+        int alg;
+        
+        if (!getPasskeyRecord(khHex, storedAppId, dummyUser, dummyName, privHex, alg) || storedAppId != appIdHex) {
+            uint8_t err[] = {0x6A, 0x80};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        if (p1 == 0x07) {
+            uint8_t err[] = {0x69, 0x85};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        if (!fidoVerifyFingerprint()) {
+            uint8_t err[] = {0x69, 0x85};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint32_t ctr = loadPersistedSignCount() + 1;
+        savePersistedSignCount(ctr);
+
+        uint8_t sigData[69];
+        memcpy(sigData, payload + 32, 32);
+        sigData[32] = 0x01;
+        sigData[33] = (ctr >> 24) & 0xFF;
+        sigData[34] = (ctr >> 16) & 0xFF;
+        sigData[35] = (ctr >> 8) & 0xFF;
+        sigData[36] = ctr & 0xFF;
+        memcpy(sigData + 37, payload, 32);
+
+        uint8_t hash[32];
+        mbedtls_md_context_t ctx;
+        mbedtls_md_init(&ctx);
+        mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+        mbedtls_md_starts(&ctx);
+        mbedtls_md_update(&ctx, sigData, 69);
+        mbedtls_md_finish(&ctx, hash);
+        mbedtls_md_free(&ctx);
+
+        uint8_t sig[100];
+        size_t sigLen = sizeof(sig);
+        if (!generateAlgSignature(-7, privHex, hash, 32, sig, &sigLen)) {
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, 0x03, err, 2);
+            return;
+        }
+
+        uint8_t resp[128];
+        resp[0] = 0x01;
+        resp[1] = (ctr >> 24) & 0xFF;
+        resp[2] = (ctr >> 16) & 0xFF;
+        resp[3] = (ctr >> 8) & 0xFF;
+        resp[4] = ctr & 0xFF;
+        memcpy(&resp[5], sig, sigLen);
+        resp[5 + sigLen] = 0x90;
+        resp[6 + sigLen] = 0x00;
+
+        sendCtapResponse(channel, 0x03, resp, 7 + sigLen);
+    }
+    else {
+        uint8_t err[] = {0x6D, 0x00};
+        sendCtapResponse(channel, 0x03, err, 2);
+    }
+}
+
 void FIDO2HIDDevice::processCtapCommand(uint32_t channel, uint8_t cmd, uint8_t* data, uint16_t len) {
     if (cmd == CTAPHID_INIT) {
         if (len < 8) {
@@ -188,9 +354,12 @@ void FIDO2HIDDevice::processCtapCommand(uint32_t channel, uint8_t cmd, uint8_t* 
     else if (cmd == CTAPHID_CANCEL && channel == activeChannelID) {
         return;
     }
+    else if (cmd == 0x03 && channel == activeChannelID) {
+        processU2fCommand(channel, data, len);
+    }
     else if (cmd == CTAPHID_CBOR && channel == activeChannelID) {
         processCborCommand(channel, data, len);
-    } 
+    }
     else {
         uint8_t err = 0x01; // CTAPHID_ERR_INVALID_CMD
         sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
