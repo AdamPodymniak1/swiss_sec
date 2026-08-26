@@ -419,3 +419,121 @@ size_t getBinaryCredentialId(const String &rpId, const String &userIdHex, uint8_
     // 6. Return the exact binary size to pack into CBOR
     return binIdLen;
 }
+
+#include <vector>
+
+// Lists only unique FIDO2 website names (RP IDs)
+void listFidoWebsites() {
+  if (!SPIFFS.exists("/passkeys.json")) {
+    Terminal.println("[FIDO2] OUT:EMPTY");
+    return;
+  }
+  File file = SPIFFS.open("/passkeys.json", "r");
+  if (!file) {
+    Terminal.println("[ERR] CODE:READ_FAILED");
+    return;
+  }
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) {
+    Terminal.println("[ERR] CODE:JSON_PARSE_FAILED");
+    return;
+  }
+
+  JsonObject obj = doc.as<JsonObject>();
+  std::vector<String> rpIds;
+
+  for (JsonPair pair : obj) {
+    JsonObject rec = pair.value().as<JsonObject>();
+    if (rec["rpId"].is<const char*>()) {
+      String rpId = rec["rpId"].as<String>();
+      bool exists = false;
+      for (const String &s : rpIds) {
+        if (s == rpId) { exists = true; break; }
+      }
+      if (!exists) {
+        rpIds.push_back(rpId);
+      }
+    }
+  }
+
+  if (rpIds.empty()) {
+    Terminal.println("[FIDO2] OUT:EMPTY");
+    return;
+  }
+
+  for (const String &rp : rpIds) {
+    Terminal.print("[FIDO2] ITEM:");
+    Terminal.println(rp.c_str());
+  }
+  Terminal.println("[FIDO2] OUT:LIST_END");
+}
+
+// Purges ALL credentials, keys, and metadata saved for the specified FIDO2 website
+bool deleteFidoWebsite(const String &rpId) {
+  if (!SPIFFS.exists("/passkeys.json")) return false;
+  File file = SPIFFS.open("/passkeys.json", "r");
+  if (!file) return false;
+  
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) return false;
+
+  JsonObject obj = doc.as<JsonObject>();
+  std::vector<String> keysToRemove;
+
+  for (JsonPair pair : obj) {
+    JsonObject record = pair.value().as<JsonObject>();
+    if (record["rpId"].is<const char*>()) {
+      String recRpId = record["rpId"].as<String>();
+      if (recRpId.equals(rpId)) {
+        keysToRemove.push_back(String(pair.key().c_str()));
+      }
+    }
+  }
+
+  if (keysToRemove.empty()) return false;
+
+  for (const String &key : keysToRemove) {
+    doc.remove(key);
+  }
+
+  file = SPIFFS.open("/passkeys.json", "w");
+  if (!file) return false;
+  serializeJson(doc, file);
+  file.close();
+  return true;
+}
+
+// Decrypts and retrieves stored account detail records for a given FIDO2 website
+String getFidoWebsiteInfo(const String &rpId) {
+  if (!isStorageKeyLoaded || !SPIFFS.exists("/passkeys.json")) return "";
+  File file = SPIFFS.open("/passkeys.json", "r");
+  if (!file) return "";
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  file.close();
+  if (error) return "";
+
+  JsonObject obj = doc.as<JsonObject>();
+  String result = "";
+
+  for (JsonPair pair : obj) {
+    JsonObject record = pair.value().as<JsonObject>();
+    if (record["rpId"].is<const char*>() && record["rpId"].as<String>().equals(rpId)) {
+      String encryptedPayload = record["payload"].as<String>();
+      String decryptedPayload = decryptStoragePayload(encryptedPayload, storageKey);
+      if (decryptedPayload != "") {
+        JsonDocument payloadDoc;
+        if (!deserializeJson(payloadDoc, decryptedPayload)) {
+          String userName = payloadDoc["uName"].as<String>();
+          result += "[FIDO2] USER:" + (userName.length() > 0 ? userName : "N/A") + " | CRED_ID:" + String(pair.key().c_str()) + "\n";
+        }
+      }
+    }
+  }
+  return result;
+}

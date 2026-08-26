@@ -38,4 +38,8 @@ String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex);
 
 size_t getBinaryCredentialId(const String &rpId, const String &userIdHex, uint8_t *outBuffer, size_t maxOutLen);
 
+void listFidoWebsites();
+bool deleteFidoWebsite(const String &rpId);
+String getFidoWebsiteInfo(const String &rpId);
+
 #endif

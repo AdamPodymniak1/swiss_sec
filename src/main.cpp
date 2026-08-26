@@ -209,9 +209,12 @@ void loop() {
                 Terminal.println("  create          - Securely save a new account and password");
                 Terminal.println("  get             - Retrieve an existing password by name");
                 Terminal.println("  delete          - Permanently wipe a password from storage");
-                Terminal.println("  delete_pin      - Reset the system by deleting the current PIN");
+                Terminal.println("  list_fido       - List all saved FIDO2 website names");
+                Terminal.println("  get_fido        - Read stored FIDO2 website info and users");
+                Terminal.println("  delete_fido     - Wipe a FIDO2 website and all saved keys");
+                Terminal.println("  delete_pin      - Reset the system by deleting current PIN");
                 Terminal.println("  delete_master   - Reset Master PIN data file storage layout");
-                Terminal.println("  delete_pass     - Reset Master PIN data file storage layout");
+                Terminal.println("  delete_pass     - Purge vault passwords and passkeys");
                 Terminal.println("  diagnostics     - Run automated verification testing suite");
                 Terminal.println("====================================================");
             }
@@ -292,6 +295,17 @@ void loop() {
                 runFullSystemDiagnostics();
                 Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
             }
+            else if (input == "list_fido") {
+                listFidoWebsites();
+            }
+            else if (input == "get_fido") {
+                Terminal.println("[FIDO2] REQ:WEBSITE_DOMAIN");
+                currentCommandState = STATE_AWAITING_FIDO_GET_NAME;
+            }
+            else if (input == "delete_fido") {
+                Terminal.println("[FIDO2] REQ:WEBSITE_DOMAIN");
+                currentCommandState = STATE_AWAITING_FIDO_DELETE_NAME;
+            }
             else {
                 Terminal.println("[ERR] CODE:UNKNOWN_CMD");
             }
@@ -355,6 +369,26 @@ void loop() {
 
         case STATE_AWAITING_DELETE_NAME:
             if (deletePassword(input)) {
+                Terminal.println("[PASS] OUT:DELETED");
+            } else {
+                Terminal.println("[ERR] CODE:NOT_FOUND");
+            }
+            currentCommandState = STATE_READY;
+            break;
+
+        case STATE_AWAITING_FIDO_GET_NAME: {
+            String info = getFidoWebsiteInfo(input);
+            if (info.length() > 0) {
+                Terminal.print(info);
+            } else {
+                Terminal.println("[ERR] CODE:NOT_FOUND");
+            }
+            currentCommandState = STATE_READY;
+            break;
+        }
+
+        case STATE_AWAITING_FIDO_DELETE_NAME:
+            if (deleteFidoWebsite(input)) {
                 Terminal.println("[PASS] OUT:DELETED");
             } else {
                 Terminal.println("[ERR] CODE:NOT_FOUND");
