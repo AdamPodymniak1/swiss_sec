@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hardware Vault & WebAuthn Test Harness</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --border: #334155;
+            --blue: #3b82f6;
+            --green: #10b981;
+            --purple: #8b5cf6;
+            --red: #ef4444;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        body { background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5; }
+
+        header { text-align: center; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+        header h1 { color: #60a5fa; font-size: 1.75rem; margin-bottom: 6px; }
+        header p { color: var(--muted); font-size: 0.9rem; }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+        .card h2 { font-size: 1.15rem; color: #93c5fd; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+
+        .form-group { margin-bottom: 14px; }
+        label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+        input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: #0f172a; color: var(--text); font-size: 0.9rem; }
+        input:focus { border-color: var(--blue); outline: none; }
+        
+        .btn-group { display: flex; gap: 8px; margin-top: 10px; }
+        button { background: var(--blue); border: none; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+        button.btn-green { background: var(--green); }
+        button.btn-purple { background: var(--purple); }
+        button.btn-red { background: var(--red); }
+        button.btn-sec { background: #475569; }
+
+        .vault-item { background: #0f172a; border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+        .vault-info { font-size: 0.85rem; }
+        .vault-info div strong { color: #93c5fd; }
+
+        #event-log { height: 180px; overflow-y: auto; background: #020617; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 0.8rem; color: #38bdf8; white-space: pre-wrap; margin-top: 24px; }
+        .log-tag { color: #a7f3d0; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Hardware Security Token Test Suite</h1>
+        <p>Interactive mock app for extension development (Password Manager, TOTP, WebAuthn Passkeys)</p>
+    </header>
+
+    <div class="grid">
+
+        <!-- CARD 1: Dummy Login Form -->
+        <div class="card">
+            <h2>1. Mock Application Login</h2>
+            <form id="login-form" onsubmit="event.preventDefault(); handleLoginSubmit();">
+                <div class="form-group">
+                    <label for="login-domain">Target Service Domain</label>
+                    <input type="text" id="login-domain" value="myservice.com" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="login-user">Username / Email</label>
+                    <input type="text" id="login-user" placeholder="user@example.com" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="login-pass">Password</label>
+                    <input type="password" id="login-pass" placeholder="••••••••••••" autocomplete="current-password">
+                </div>
+                <div class="btn-group">
+                    <button type="button" class="btn-purple" onclick="triggerExtensionAutofill()">Plugin: Trigger Fill</button>
+                    <button type="submit" class="btn-green">Sign In</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- CARD 2: Dummy Registration Form -->
+        <div class="card">
+            <h2>2. Mock Application Registration</h2>
+            <form id="register-form" onsubmit="event.preventDefault(); handleRegisterSubmit();">
+                <div class="form-group">
+                    <label for="reg-domain">Service Domain</label>
+                    <input type="text" id="reg-domain" value="myservice.com" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="reg-user">New Username</label>
+                    <input type="text" id="reg-user" value="alex_dev" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="reg-pass">Generated Password</label>
+                    <input type="text" id="reg-pass" placeholder="Click generate or plugin fill" autocomplete="new-password">
+                </div>
+                <div class="btn-group">
+                    <button type="button" class="btn-sec" onclick="mockGeneratePassword()">Generate Password</button>
+                    <button type="button" class="btn-purple" onclick="triggerExtensionSave()">Plugin: Save Credential</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- CARD 3: Simulated Stored Vault -->
+        <div class="card">
+            <h2>3. Local Vault Preview (Mock UI)</h2>
+            <div id="vault-items">
+                <div class="vault-item">
+                    <div class="vault-info">
+                        <div><strong>myservice.com</strong></div>
+                        <div style="color:var(--muted)">alex_dev</div>
+                    </div>
+                    <button type="button" style="width:auto; padding: 4px 8px;" class="btn-sec" onclick="fillFromVault('alex_dev', 'SuperS3cr3tP@ss!')">Use</button>
+                </div>
+                <div class="vault-item">
+                    <div class="vault-info">
+                        <div><strong>github.com</strong></div>
+                        <div style="color:var(--muted)">dev_user</div>
+                    </div>
+                    <button type="button" style="width:auto; padding: 4px 8px;" class="btn-sec" onclick="fillFromVault('dev_user', 'k9#mP$2xL1@vN')">Use</button>
+                </div>
+            </div>
+            <button type="button" class="btn-sec" style="margin-top: 10px;" onclick="logEvent('Plugin Event', 'Vault refresh requested')">Request Plugin Vault Sync</button>
+        </div>
+
+        <!-- CARD 4: 2FA TOTP Tester -->
+        <div class="card">
+            <h2>4. 2FA TOTP Code Generator</h2>
+            <div class="form-group">
+                <label for="totp-account">Account Label</label>
+                <input type="text" id="totp-account" value="myservice:alex_dev">
+            </div>
+            <div class="form-group">
+                <label for="totp-code">6-Digit Authenticator Code</label>
+                <input type="text" id="totp-code" placeholder="123 456" maxlength="6" style="font-family: monospace; letter-spacing: 4px; text-align: center; font-size: 1.1rem;">
+            </div>
+            <div class="btn-group">
+                <button type="button" class="btn-purple" onclick="triggerTotpFetch()">Plugin: Fetch TOTP</button>
+                <button type="button" class="btn-green" onclick="logEvent('2FA', 'Submitted OTP Code: ' + document.getElementById('totp-code').value)">Verify Code</button>
+            </div>
+        </div>
+
+        <!-- CARD 5: Standard WebAuthn / FIDO2 Passkey Tester -->
+        <div class="card">
+            <h2>5. WebAuthn / FIDO2 Passkey Tester</h2>
+            <div class="form-group">
+                <label for="fido-user">Passkey User</label>
+                <input type="text" id="fido-user" value="alex_dev">
+            </div>
+            <div class="form-group">
+                <label for="fido-alg">Algorithm</label>
+                <select id="fido-alg">
+                    <option value="-7">ES256 (ECDSA P-256)</option>
+                    <option value="-8">Ed25519 (EdDSA)</option>
+                    <option value="-257">RS256 (RSA 2048)</option>
+                </select>
+            </div>
+            <div class="btn-group">
+                <button type="button" class="btn-purple" onclick="registerPasskey()">WebAuthn Register</button>
+                <button type="button" class="btn-green" onclick="authenticatePasskey()">WebAuthn Sign-In</button>
+            </div>
+        </div>
+
+        <!-- CARD 6: Plugin Debugging Hook Events -->
+        <div class="card">
+            <h2>6. Plugin Event Dispatcher</h2>
+            <p style="font-size:0.85rem; color:var(--muted); margin-bottom: 12px;">Fires DOM events (`vault-request`, `vault-save`) that your browser extension can listen for.</p>
+            <div class="btn-group">
+                <button type="button" class="btn-sec" onclick="dispatchCustomDOMEvent('vault-request-fill')">Dispatch Fill Event</button>
+                <button type="button" class="btn-sec" onclick="dispatchCustomDOMEvent('vault-request-save')">Dispatch Save Event</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Debug Log -->
+    <div id="event-log"></div>
+
+    <script>
+        function logEvent(tag, message) {
+            const consoleEl = document.getElementById('event-log');
+            const entry = document.createElement('div');
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `[${time}] <span class="log-tag">[${tag}]</span> ${message}`;
+            consoleEl.appendChild(entry);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        // Mock Login / Register Handlers
+        function handleLoginSubmit() {
+            const user = document.getElementById('login-user').value;
+            const pass = document.getElementById('login-pass').value;
+            logEvent('Form Submit', `Login attempted for User: "${user}" with Password length: ${pass.length}`);
+        }
+
+        function handleRegisterSubmit() {
+            const user = document.getElementById('reg-user').value;
+            logEvent('Form Submit', `Registration submitted for User: "${user}"`);
+        }
+
+        function mockGeneratePassword() {
+            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()';
+            let pass = '';
+            for (let i = 0; i < 16; i++) {
+                pass += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            document.getElementById('reg-pass').value = pass;
+            logEvent('Generator', 'Generated random password locally');
+        }
+
+        function fillFromVault(user, pass) {
+            document.getElementById('login-user').value = user;
+            document.getElementById('login-pass').value = pass;
+            logEvent('Mock Vault', `Auto-filled form with user: ${user}`);
+        }
+
+        // Custom DOM Event Hooks for Browser Extensions
+        function triggerExtensionAutofill() {
+            logEvent('Plugin Event', 'Dispatched "vault-autofill" event');
+            window.dispatchEvent(new CustomEvent('vault-autofill', {
+                detail: { domain: document.getElementById('login-domain').value }
+            }));
+        }
+
+        function triggerExtensionSave() {
+            const user = document.getElementById('reg-user').value;
+            const pass = document.getElementById('reg-pass').value;
+            logEvent('Plugin Event', `Dispatched "vault-save" event for user: ${user}`);
+            window.dispatchEvent(new CustomEvent('vault-save', {
+                detail: {
+                    domain: document.getElementById('reg-domain').value,
+                    username: user,
+                    password: pass
+                }
+            }));
+        }
+
+        function triggerTotpFetch() {
+            logEvent('Plugin Event', 'Dispatched "totp-request" event');
+            window.dispatchEvent(new CustomEvent('totp-request', {
+                detail: { account: document.getElementById('totp-account').value }
+            }));
+        }
+
+        function dispatchCustomDOMEvent(eventName) {
+            logEvent('Plugin Event', `Manual dispatch: ${eventName}`);
+            window.dispatchEvent(new CustomEvent(eventName, { detail: { timestamp: Date.now() } }));
+        }
+
+        let registeredCredentialRawId = null;
+
+        async function registerPasskey() {
+            const username = document.getElementById('fido-user').value;
+            const alg = parseInt(document.getElementById('fido-alg').value);
+
+            const challenge = new Uint8Array(32);
+            window.crypto.getRandomValues(challenge);
+
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    rp: { name: "Mock Vault App" },
+                    user: {
+                        // In a real app, this ID comes from your database
+                        id: new TextEncoder().encode(username),
+                        name: username,
+                        displayName: username
+                    },
+                    pubKeyCredParams: [{ type: "public-key", alg: alg }],
+                    authenticatorSelection: { 
+                        // Force a modern Passkey (Discoverable Credential)
+                        residentKey: "required", 
+                        requireResidentKey: true,
+                        userVerification: "preferred" 
+                    },
+                    timeout: 60000
+                }
+            };
+
+            try {
+                logEvent('WebAuthn', 'Calling navigator.credentials.create()...');
+                const cred = await navigator.credentials.create(options);
+                
+                // Save the rawId so we can request it specifically during login
+                registeredCredentialRawId = cred.rawId;
+                
+                logEvent('WebAuthn Success', `Credential Created! ID: ${cred.id}`);
+            } catch (err) {
+                logEvent('WebAuthn Error', err.message);
+            }
+        }
+
+        async function authenticatePasskey() {
+            const challenge = new Uint8Array(32);
+            window.crypto.getRandomValues(challenge);
+
+            const options = {
+                publicKey: {
+                    challenge: challenge,
+                    timeout: 60000,
+                    userVerification: "preferred"
+                }
+            };
+
+            // If we just registered a key in this browser session, explicitly ask for it
+            if (registeredCredentialRawId) {
+                options.publicKey.allowCredentials = [{
+                    type: "public-key",
+                    id: registeredCredentialRawId
+                }];
+            }
+
+            try {
+                logEvent('WebAuthn', 'Calling navigator.credentials.get()...');
+                const assertion = await navigator.credentials.get(options);
+                logEvent('WebAuthn Success', `Assertion Received! ID: ${assertion.id}`);
+            } catch (err) {
+                logEvent('WebAuthn Error', err.message);
+            }
+        }
+
+        // Window Listener for testing responses coming BACK from your future plugin
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.source === 'my-hardware-plugin') {
+                logEvent('Plugin RX', JSON.stringify(event.data));
+                if (event.data.action === 'fill_credentials') {
+                    document.getElementById('login-user').value = event.data.username || '';
+                    document.getElementById('login-pass').value = event.data.password || '';
+                } else if (event.data.action === 'fill_totp') {
+                    document.getElementById('totp-code').value = event.data.code || '';
+                }
+            }
+        });
+
+        logEvent('System', 'Mock site initialized. Ready for browser extension integration.');
+    </script>
+</body>
+</html>
