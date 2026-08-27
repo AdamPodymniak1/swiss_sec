@@ -537,3 +537,43 @@ String getFidoWebsiteInfo(const String &rpId) {
   }
   return result;
 }
+
+void saveTotpSecret(const String &name, const String &secret) {
+    if (!isStorageKeyLoaded) return;
+    
+    JsonDocument doc;
+    if (SPIFFS.exists("/totp.json")) {
+        File file = SPIFFS.open("/totp.json", "r");
+        if (file) {
+            deserializeJson(doc, file);
+            file.close();
+        }
+    }
+    
+    String encryptedValue = encryptStoragePayload(secret, storageKey);
+    if (encryptedValue == "") return;
+    
+    doc[name] = encryptedValue;
+    File file = SPIFFS.open("/totp.json", "w");
+    if (!file) return;
+    
+    serializeJson(doc, file);
+    file.close();
+    Terminal.println("[TOTP] OUT:SAVED");
+}
+
+String getTotpSecret(const String &name) {
+    if (!isStorageKeyLoaded) return "";
+    
+    File file = SPIFFS.open("/totp.json", "r");
+    if (!file) return "";
+    
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+    
+    if (!doc[name].is<JsonVariant>()) return "";
+    
+    String encryptedValue = doc[name].as<String>();
+    return decryptStoragePayload(encryptedValue, storageKey);
+}

@@ -803,3 +803,63 @@ bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t*
     }
     return false;
 }
+
+int decodeBase32(const char* b32, uint8_t* out) {
+    int len = strlen(b32);
+    int buffer = 0;
+    int bitsLeft = 0;
+    int count = 0;
+    
+    for (int i = 0; i < len; i++) {
+        uint8_t val = 0;
+        char c = b32[i];
+        
+        if (c >= 'A' && c <= 'Z') val = c - 'A';
+        else if (c >= 'a' && c <= 'z') val = c - 'a';
+        else if (c >= '2' && c <= '7') val = c - '2' + 26;
+        else continue;
+        
+        buffer = (buffer << 5) | val;
+        bitsLeft += 5;
+        
+        if (bitsLeft >= 8) {
+            out[count++] = (buffer >> (bitsLeft - 8)) & 0xFF;
+            bitsLeft -= 8;
+        }
+    }
+    return count;
+}
+
+String generateTOTP(const String& base32Secret, uint32_t unixTime) {
+    uint8_t key[64];
+    int keyLen = decodeBase32(base32Secret.c_str(), key);
+    
+    uint64_t timeStep = unixTime / 30;
+    uint8_t timeBytes[8];
+    
+    for (int i = 7; i >= 0; i--) {
+        timeBytes[i] = timeStep & 0xFF;
+        timeStep >>= 8;
+    }
+    
+    uint8_t hash[20];
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 1);
+    mbedtls_md_hmac_starts(&ctx, key, keyLen);
+    mbedtls_md_hmac_update(&ctx, timeBytes, 8);
+    mbedtls_md_hmac_finish(&ctx, hash);
+    mbedtls_md_free(&ctx);
+    
+    int offset = hash[19] & 0x0F;
+    uint32_t binary = ((hash[offset] & 0x7F) << 24) |
+                      ((hash[offset + 1] & 0xFF) << 16) |
+                      ((hash[offset + 2] & 0xFF) << 8) |
+                      (hash[offset + 3] & 0xFF);
+                      
+    uint32_t otp = binary % 1000000;
+    char code[7];
+    sprintf(code, "%06u", otp);
+    
+    return String(code);
+}

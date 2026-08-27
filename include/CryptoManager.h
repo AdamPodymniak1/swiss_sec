@@ -45,4 +45,7 @@ bool generateEd25519KeyPair(String &privateKeyHexOut, uint8_t *pubKeyXOut);
 bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLen, uint8_t* eOut, size_t* eLen);
 bool generateAlgSignature(int algId, const String &privateKeyHex, const uint8_t *hash, size_t hashLen, uint8_t *sigOut, size_t *sigLen);
 
+int decodeBase32(const char* b32, uint8_t* out);
+String generateTOTP(const String& base32Secret, uint32_t unixTime);
+
 #endif

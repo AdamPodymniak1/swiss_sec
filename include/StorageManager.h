@@ -42,4 +42,7 @@ void listFidoWebsites();
 bool deleteFidoWebsite(const String &rpId);
 String getFidoWebsiteInfo(const String &rpId);
 
+void saveTotpSecret(const String &name, const String &secret);
+String getTotpSecret(const String &name);
+
 #endif

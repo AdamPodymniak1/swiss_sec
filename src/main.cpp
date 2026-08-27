@@ -1,5 +1,6 @@
 // main.cpp
 #include <Arduino.h>
+#include <sys/time.h>
 #include "Globals.h"
 #include "DisplayManager.h"
 #include "FingerprintManager.h"
@@ -306,6 +307,21 @@ void loop() {
                 Terminal.println("[FIDO2] REQ:WEBSITE_DOMAIN");
                 currentCommandState = STATE_AWAITING_FIDO_DELETE_NAME;
             }
+            else if (input.startsWith("SET_TIME:")) {
+                struct timeval tv;
+                tv.tv_sec = input.substring(9).toInt();
+                tv.tv_usec = 0;
+                settimeofday(&tv, NULL);
+                Terminal.println("[SYS] TIME_SYNCED");
+            }
+            else if (input == "totp_add") {
+                Terminal.println("[TOTP] REQ:NAME");
+                currentCommandState = STATE_AWAITING_TOTP_NAME;
+            }
+            else if (input == "totp_get") {
+                Terminal.println("[TOTP] REQ:NAME");
+                currentCommandState = STATE_AWAITING_TOTP_GET;
+            }
             else {
                 Terminal.println("[ERR] CODE:UNKNOWN_CMD");
             }
@@ -395,6 +411,40 @@ void loop() {
             }
             currentCommandState = STATE_READY;
             break;
+        
+        case STATE_AWAITING_TOTP_NAME:
+            pendingName = input;
+            Terminal.println("[TOTP] REQ:BASE32_SECRET");
+            currentCommandState = STATE_AWAITING_TOTP_SECRET;
+            break;
+
+        case STATE_AWAITING_TOTP_SECRET:
+            saveTotpSecret(pendingName, input);
+            pendingName = "";
+            currentCommandState = STATE_READY;
+            break;
+
+        case STATE_AWAITING_TOTP_GET: {
+            String secret = getTotpSecret(input);
+            if (secret.length() > 0) {
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                String code = generateTOTP(secret, tv.tv_sec);
+                
+                u8g2.clearBuffer();
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(0, 14, input.c_str());
+                u8g2.drawStr(0, 30, code.c_str());
+                u8g2.sendBuffer();
+                
+                Terminal.print("[TOTP] CODE:");
+                Terminal.println(code);
+            } else {
+                Terminal.println("[ERR] CODE:NOT_FOUND");
+            }
+            currentCommandState = STATE_READY;
+            break;
+        }
 
         default:
             currentCommandState = STATE_READY;
