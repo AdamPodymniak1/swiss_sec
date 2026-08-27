@@ -1,3 +1,4 @@
+// FingerprintManager.cpp
 #include "FingerprintManager.h"
 #include "DisplayManager.h"
 #include "Globals.h"
@@ -21,56 +22,29 @@ void initFingerprintSensor() {
     if (verified) {
         Serial.println("READY");
     } else {
-        xSemaphoreTake(displayMutex, portMAX_DELAY);
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "SENSOR ERROR!");
-        u8g2.sendBuffer();
-        xSemaphoreGive(displayMutex);
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        showDisplayMessage(1, "SENSOR ERROR!", "", 2000);
     }
 #endif
 }
 
 bool enrollFingerprint(uint8_t id) {
 #if USE_FINGERPRINT_SIMULATOR
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "Press Button 1");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
+    showDisplayMessage(1, "Press Button 1", "", 0);
     
     while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { vTaskDelay(50 / portTICK_PERIOD_MS); }
     while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
 
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "Press Button 2");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
+    showDisplayMessage(1, "Press Button 2", "", 0);
     
     while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { vTaskDelay(50 / portTICK_PERIOD_MS); }
     while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
 
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "STORED OK");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    showDisplayMessage(1, "STORED OK", "", 2000);
     return true;
 #else
     int p = -1;
     
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "Place finger");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
+    showDisplayMessage(1, "Place finger", "", 0);
 
     while (p != FINGERPRINT_OK) {
         xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
@@ -86,14 +60,9 @@ bool enrollFingerprint(uint8_t id) {
     xSemaphoreGive(fingerprintMutex);
     if (p != FINGERPRINT_OK) return false;
 
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "Remove finger");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
-    
+    showDisplayMessage(1, "Remove finger", "", 0);
     vTaskDelay(1500 / portTICK_PERIOD_MS);
+    
     p = 0;
     while (p != FINGERPRINT_NOFINGER) {
         xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
@@ -102,13 +71,7 @@ bool enrollFingerprint(uint8_t id) {
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "Place SAME");
-    u8g2.drawStr(0, 30, "finger again");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
+    showDisplayMessage(2, "Place SAME", "finger again", 0);
 
     p = -1;
     while (p != FINGERPRINT_OK) {
@@ -129,13 +92,7 @@ bool enrollFingerprint(uint8_t id) {
     p = finger.createModel();
     xSemaphoreGive(fingerprintMutex);
     if (p != FINGERPRINT_OK) {
-        xSemaphoreTake(displayMutex, portMAX_DELAY);
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "MISMATCH!");
-        u8g2.sendBuffer();
-        xSemaphoreGive(displayMutex);
-        vTaskDelay(3000 / portTICK_PERIOD_MS);
+        showDisplayMessage(1, "MISMATCH!", "", 3000);
         return false;
     }
 
@@ -143,13 +100,7 @@ bool enrollFingerprint(uint8_t id) {
     p = finger.storeModel(id);
     xSemaphoreGive(fingerprintMutex);
     if (p == FINGERPRINT_OK) {
-        xSemaphoreTake(displayMutex, portMAX_DELAY);
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "STORED OK");
-        u8g2.sendBuffer();
-        xSemaphoreGive(displayMutex);
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        showDisplayMessage(1, "STORED OK", "", 2000);
         return true;
     } else {
         return false;
@@ -167,19 +118,13 @@ void updateFingerprintAsync() {
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
         
-        //Terminal.println(computedResponse);
         Terminal.println(pendingPasswordToTransmit);
         Terminal.flush();
         
         pendingPasswordToTransmit = "";
         currentCommandState = STATE_READY;
         
-        xSemaphoreTake(displayMutex, portMAX_DELAY);
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "TRANSMITTED!");
-        u8g2.sendBuffer();
-        xSemaphoreGive(displayMutex);
+        showDisplayMessage(1, "TRANSMITTED!", "", 0);
     }
 #else
     xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
@@ -219,39 +164,17 @@ void updateFingerprintAsync() {
                     pendingPasswordToTransmit = ""; 
                     currentCommandState = STATE_READY;
                     
-                    xSemaphoreTake(displayMutex, portMAX_DELAY);
-                    u8g2.clearBuffer();
-                    u8g2.setFont(u8g2_font_ncenB08_tr);
-                    u8g2.drawStr(0, 15, "TRANSMITTED!");
-                    u8g2.sendBuffer();
-                    xSemaphoreGive(displayMutex);
+                    showDisplayMessage(1, "TRANSMITTED!", "", 0);
 
                     unsigned long startWait = millis();
                     while (millis() - startWait < 1200) { vTaskDelay(10 / portTICK_PERIOD_MS); }
                     
-                    xSemaphoreTake(displayMutex, portMAX_DELAY);
-                    u8g2.clearBuffer();
-                    u8g2.setFont(u8g2_font_ncenB08_tr);
-                    u8g2.drawStr(0, 15, "Logged In");
-                    u8g2.sendBuffer();
-                    xSemaphoreGive(displayMutex);
+                    showDisplayMessage(1, "Logged In", "", 0);
                 } else {
-                    xSemaphoreTake(displayMutex, portMAX_DELAY);
-                    u8g2.clearBuffer();
-                    u8g2.setFont(u8g2_font_ncenB08_tr);
-                    u8g2.drawStr(0, 15, "Try again");
-                    u8g2.sendBuffer();
-                    xSemaphoreGive(displayMutex);
-                    vTaskDelay(1000 / portTICK_PERIOD_MS);
+                    showDisplayMessage(1, "Try again", "", 1000);
                 }
             } else {
-                xSemaphoreTake(displayMutex, portMAX_DELAY);
-                u8g2.clearBuffer();
-                u8g2.setFont(u8g2_font_ncenB08_tr);
-                u8g2.drawStr(0, 15, "Unknown Finger");
-                u8g2.sendBuffer();
-                xSemaphoreGive(displayMutex);
-                vTaskDelay(2000 / portTICK_PERIOD_MS);
+                showDisplayMessage(1, "Unknown Finger", "", 2000);
             }
         } else {
             vTaskDelay(500 / portTICK_PERIOD_MS);

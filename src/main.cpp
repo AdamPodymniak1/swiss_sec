@@ -47,12 +47,7 @@ void cliTask(void *pvParameters) {
                 authenticated = false;
                 clearStorageKey();
                 currentCommandState = STATE_READY;
-                xSemaphoreTake(displayMutex, portMAX_DELAY);
-                u8g2.clearBuffer();
-                u8g2.setFont(u8g2_font_ncenB08_tr);
-                u8g2.drawStr(0, 15, "AWAITING AUTH");
-                u8g2.sendBuffer();
-                xSemaphoreGive(displayMutex);
+                showDisplayMessage(1, "AWAITING AUTH", "", 0);
                 Terminal.println("[SYS] STATUS:BOOT");
                 if (!isPinSet()) {
                     Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
@@ -68,12 +63,7 @@ void cliTask(void *pvParameters) {
                 encryptionActive = false;
                 clearStorageKey();
                 currentCommandState = STATE_READY;
-                xSemaphoreTake(displayMutex, portMAX_DELAY);
-                u8g2.clearBuffer();
-                u8g2.setFont(u8g2_font_ncenB08_tr);
-                u8g2.drawStr(0, 15, "DISCONNECTED");
-                u8g2.sendBuffer();
-                xSemaphoreGive(displayMutex);
+                showDisplayMessage(1, "DISCONNECTED", "", 0);
                 Terminal.println("[SYS] STATUS:DISCONNECTED");
                 Terminal.flush();
                 continue;
@@ -91,12 +81,7 @@ void cliTask(void *pvParameters) {
                 if (verifyPin(input)) {
                     authenticated = true;
                     deriveStorageKey(input);
-                    xSemaphoreTake(displayMutex, portMAX_DELAY);
-                    u8g2.clearBuffer();
-                    u8g2.setFont(u8g2_font_ncenB08_tr);
-                    u8g2.drawStr(0, 15, "ACCESS GRANTED");
-                    u8g2.sendBuffer();
-                    xSemaphoreGive(displayMutex);
+                    showDisplayMessage(1, "ACCESS GRANTED", "", 0);
                     Terminal.println("[AUTH] STATUS:SUCCESS");
                     Terminal.println("[SYS] STATUS:READY");
                     Terminal.flush();
@@ -144,44 +129,26 @@ void cliTask(void *pvParameters) {
                         if (deletePin()) {
                             authenticated = false;
                             Terminal.println("[AUTH] STATUS:FACTORY_RESET_COMPLETE");
-                            xSemaphoreTake(displayMutex, portMAX_DELAY);
-                            u8g2.clearBuffer();
-                            u8g2.setFont(u8g2_font_ncenB08_tr);
-                            u8g2.drawStr(0, 15, "WIPING HARDWARE");
-                            u8g2.sendBuffer();
-                            xSemaphoreGive(displayMutex);
+                            showDisplayMessage(1, "WIPING HARDWARE", "", 0);
+                            
                             xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
                             finger.emptyDatabase();
                             xSemaphoreGive(fingerprintMutex);
+                            
                             Terminal.println("[SYS] FINGERPRINT DATABASE WIPED");
                             vTaskDelay(1000 / portTICK_PERIOD_MS);
-                            xSemaphoreTake(displayMutex, portMAX_DELAY);
-                            u8g2.clearBuffer();
-                            u8g2.setFont(u8g2_font_ncenB08_tr);
-                            u8g2.drawStr(0, 15, "SYSTEM RESET");
-                            u8g2.sendBuffer();
-                            xSemaphoreGive(displayMutex);
-                            vTaskDelay(2000 / portTICK_PERIOD_MS);
+                            
+                            showDisplayMessage(1, "SYSTEM RESET", "", 2000);
                             ESP.restart();
                         } else {
                             Terminal.println("[ERR] CODE:NO_PIN_FOUND");
                         }
                     } else if (input == "delete_pass") {
-                        xSemaphoreTake(displayMutex, portMAX_DELAY);
-                        u8g2.clearBuffer();
-                        u8g2.setFont(u8g2_font_ncenB08_tr);
-                        u8g2.drawStr(0, 15, "PURGING VAULT");
-                        u8g2.sendBuffer();
-                        xSemaphoreGive(displayMutex);
+                        showDisplayMessage(1, "PURGING VAULT", "", 0);
                         clearAllStoredPasswords();
                         Terminal.println("[SYS] VAULT PURGE SUCCESSFUL: ALL LOGINS & PASSKEYS WIPE COMPLETE");
                         vTaskDelay(1000 / portTICK_PERIOD_MS);
-                        xSemaphoreTake(displayMutex, portMAX_DELAY);
-                        u8g2.clearBuffer();
-                        u8g2.setFont(u8g2_font_ncenB08_tr);
-                        u8g2.drawStr(0, 15, "AWAITING AUTH");
-                        u8g2.sendBuffer();
-                        xSemaphoreGive(displayMutex);
+                        showDisplayMessage(1, "AWAITING AUTH", "", 0);
                     } else if (input == "diagnostics") {
                         runFullSystemDiagnostics();
                         Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
@@ -244,13 +211,7 @@ void cliTask(void *pvParameters) {
                     String pw = getPasswordFromStorage(input);
                     if (pw.length() > 0) {
                         pendingPasswordToTransmit = pw;
-                        xSemaphoreTake(displayMutex, portMAX_DELAY);
-                        u8g2.clearBuffer();
-                        u8g2.setFont(u8g2_font_ncenB08_tr);
-                        u8g2.drawStr(0, 14, "GETTING:");
-                        u8g2.drawStr(0, 28, input.c_str());
-                        u8g2.sendBuffer();
-                        xSemaphoreGive(displayMutex);
+                        showDisplayMessage(2, "GETTING:", input, 0);
                         Terminal.println("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL");
                         currentCommandState = STATE_AWAITING_FINGERPRINT;
                     } else {
@@ -301,13 +262,7 @@ void cliTask(void *pvParameters) {
                         struct timeval tv;
                         gettimeofday(&tv, NULL);
                         String code = generateTOTP(secret, tv.tv_sec);
-                        xSemaphoreTake(displayMutex, portMAX_DELAY);
-                        u8g2.clearBuffer();
-                        u8g2.setFont(u8g2_font_ncenB08_tr);
-                        u8g2.drawStr(0, 14, input.c_str());
-                        u8g2.drawStr(0, 30, code.c_str());
-                        u8g2.sendBuffer();
-                        xSemaphoreGive(displayMutex);
+                        showDisplayMessage(2, input, code, 0);
                         Terminal.print("[TOTP] CODE:");
                         Terminal.println(code);
                     } else {
@@ -338,13 +293,13 @@ void setup() {
         neopixelWrite(RGB_BUILTIN, 0, 0, 0);
     #endif
 
+    // MUST initialize u8g2 hardware controller first!
     xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "BOOTING...");
-    u8g2.sendBuffer();
     xSemaphoreGive(displayMutex);
+
+    // Now safe to use your helper function
+    showDisplayMessage(1, "BOOTING...", "", 0);
 
     Serial.begin(115200);
     FidoHID.begin();
@@ -361,23 +316,13 @@ void setup() {
 
     if (!initStorage()) {
         Serial.println("[SYS] ERR:SPIFFS_MOUNT_FAILED");
-        xSemaphoreTake(displayMutex, portMAX_DELAY);
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "SPIFFS FAILED");
-        u8g2.sendBuffer();
-        xSemaphoreGive(displayMutex);
+        showDisplayMessage(1, "SPIFFS FAILED", "", 0);
         return;
     }
 
     initFingerprintSensor();
 
-    xSemaphoreTake(displayMutex, portMAX_DELAY);
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "AWAITING AUTH");
-    u8g2.sendBuffer();
-    xSemaphoreGive(displayMutex);
+    showDisplayMessage(1, "AWAITING AUTH", "", 0);
 
     xTaskCreatePinnedToCore(fidoTask, "FidoTask", 8192, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(cliTask, "CliTask", 8192, NULL, 1, NULL, 1);

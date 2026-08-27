@@ -1,3 +1,4 @@
+// SelfTestManager.cpp
 #include "SelfTestManager.h"
 #include "Globals.h"
 #include "DisplayManager.h"
@@ -109,18 +110,8 @@ bool testStorageSubsystem() {
 }
 
 bool testDisplaySubsystem() {
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "TEST");
-    u8g2.sendBuffer();
-    delay(300); 
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "TEST");
-    u8g2.sendBuffer();
-    delay(300); 
+    showDisplayMessage(1, "TEST", "", 300);
+    showDisplayMessage(1, "TEST", "", 300);
 
     printTestResult("Hardware: LovyanGFX Panel Rendering Pipeline", true);
     return true;
@@ -151,11 +142,7 @@ void runFullSystemDiagnostics() {
     Serial.println("[DIAGNOSTICS] INITIATING FULL HARDWARE & SOFTWARE TESTS");
     Serial.println("====================================================");
     
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
-    u8g2.drawStr(0, 15, "DIAGNOSTICS");
-    u8g2.sendBuffer();
+    showDisplayMessage(1, "DIAGNOSTICS", "", 0);
 
     int totalTestsPassed = 0;
 
@@ -170,13 +157,9 @@ void runFullSystemDiagnostics() {
     Serial.println("/4");
     Serial.println("====================================================\n");
 
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB08_tr);
     if (authenticated) {
-        u8g2.drawStr(0, 15, "Logged In");
+        showDisplayMessage(1, "Logged In", "", 0);
     } else {
-        u8g2.drawStr(0, 15, "Awaiting Auth");
+        showDisplayMessage(1, "Awaiting Auth", "", 0);
     }
-    u8g2.sendBuffer();
 }
