@@ -8,6 +8,7 @@
 #define USE_FINGERPRINT_SIMULATOR 1
 #define SIMULATOR_BUTTON_PIN 4
 
+// CLI states model prompts that span more than one serial command.
 enum SystemState {
     STATE_READY,
     STATE_AWAITING_CREATE_NAME,

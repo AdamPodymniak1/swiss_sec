@@ -9,6 +9,7 @@
 extern bool encryptionActive;
 extern byte aesKey[32];
 
+// Shared crypto helpers cover the serial tunnel, vault records, and WebAuthn keys.
 void initCrypto();
 size_t fromHex(const String &hex, byte *output, size_t max_len);
 String toHex(const byte *data, size_t len);

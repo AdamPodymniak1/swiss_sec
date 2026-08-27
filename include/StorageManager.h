@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 
+// Storage APIs are split by PIN vault records, resident passkeys, and TOTP seeds.
 void deriveStorageKey(const String &pin);
 void clearStorageKey();
 

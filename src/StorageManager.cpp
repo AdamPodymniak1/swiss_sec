@@ -5,6 +5,7 @@
 #include "Globals.h"
 #include <vector>
 
+// Loaded after successful PIN entry and cleared on disconnect or vault purge.
 static byte storageKey[32] = {0};
 static bool isStorageKeyLoaded = false;
 
@@ -97,6 +98,7 @@ void resetFailedPinAttempts() {
     xSemaphoreGive(storageMutex);
 }
 
+// Factory reset removes every secret-bearing SPIFFS record.
 void factoryResetSystem() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     SPIFFS.remove("/passwords.json");
@@ -125,7 +127,7 @@ bool verifyPin(const String &pin) {
     String storedHash = file.readString();
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (storedHash == hashPin(pin)) {
         resetFailedPinAttempts();
         return true;
@@ -163,6 +165,7 @@ bool isPasswordExists(const String &name) {
     return !error && doc[name].is<JsonVariant>();
 }
 
+// Password entries are stored under the PIN-derived vault key.
 void savePassword(const String &name, const String &password) {
     if (!isStorageKeyLoaded) { Terminal.println("[ERR] CODE:STORAGE_KEY_LOCKED"); return; }
     if (name.length() > 32) { Terminal.println("[ERR] CODE:NAME_TOO_LONG"); return; }
@@ -218,7 +221,7 @@ String getPasswordFromStorage(const String &name) {
     deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (!doc[name].is<JsonVariant>()) return "";
     String encryptedValue = doc[name].as<String>();
     return decryptStoragePayload(encryptedValue, storageKey);
@@ -238,7 +241,7 @@ bool deletePassword(const String &name) {
     JsonDocument doc;
     deserializeJson(doc, file);
     file.close();
-    
+
     if (!doc[name].is<JsonVariant>()) {
         xSemaphoreGive(storageMutex);
         return false;
@@ -288,7 +291,7 @@ void showStorageInfo() {
     size_t used = SPIFFS.usedBytes();
     size_t free = total - used;
     float usage = ((float)used / total) * 100;
-    
+
     int count = 0; size_t chars = 0; float avg = 0;
     if (SPIFFS.exists("/passwords.json")) {
         File file = SPIFFS.open("/passwords.json", "r");
@@ -339,8 +342,8 @@ bool isPasskeyExists(const String &credentialIdHex) {
 }
 
 bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
-    
-    // 1. Generate the hardware-bound key
+
+    // Passkey private material is wrapped with the hardware key, not the vault key.
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
 
@@ -365,15 +368,14 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     String rawPayload;
     serializeJson(payloadDoc, rawPayload);
 
-    // 2. Use fidoKey instead of storageKey for encryption
     String encryptedPayload = encryptStoragePayload(rawPayload, fidoKey);
-    
+
     if (encryptedPayload == "") {
         xSemaphoreGive(storageMutex);
         Terminal.println("[ERR] CODE:PASSKEY_ENC_FAILED");
         return false;
     }
-    
+
     record["payload"] = encryptedPayload;
     record["alg"] = algId;
     File file = SPIFFS.open("/passkeys.json", "w");
@@ -382,7 +384,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
         Terminal.println("[ERR] CODE:FILE_CREATE_FAILED");
         return false;
     }
-    
+
     serializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
@@ -393,8 +395,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, 
                       String &userIdHexOut, String &userNameOut, 
                       String &privateKeyHexOut, int &algId) {
-    
-    // 1. Generate the hardware-bound key
+
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
 
@@ -419,9 +420,8 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut,
     rpIdOut = record["rpId"].as<String>();
     String encryptedPayload = record["payload"].as<String>();
 
-    // 2. Use fidoKey instead of storageKey for decryption
     String decryptedPayload = decryptStoragePayload(encryptedPayload, fidoKey);
-    
+
     if (decryptedPayload == "") return false;
 
     JsonDocument payloadDoc;
@@ -450,7 +450,7 @@ String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) 
     DeserializationError error = deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (error) return "";
 
     JsonObject obj = doc.as<JsonObject>();
@@ -459,7 +459,7 @@ String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) 
         if (recordRpId.equals(rpId)) {
             String encryptedPayload = pair.value()["payload"].as<String>();
             String decryptedPayload = decryptStoragePayload(encryptedPayload, storageKey);
-            
+
             if (decryptedPayload != "") {
                 JsonDocument payloadDoc;
                 if (!deserializeJson(payloadDoc, decryptedPayload)) {
@@ -504,7 +504,7 @@ void listFidoWebsites() {
     DeserializationError error = deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (error) {
         Terminal.println("[ERR] CODE:JSON_PARSE_FAILED");
         return;
@@ -553,7 +553,7 @@ bool deleteFidoWebsite(const String &rpId) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, file);
     file.close();
-    
+
     if (error) {
         xSemaphoreGive(storageMutex);
         return false;
@@ -609,7 +609,7 @@ String getFidoWebsiteInfo(const String &rpId) {
     DeserializationError error = deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (error) return "";
 
     JsonObject obj = doc.as<JsonObject>();
@@ -632,9 +632,10 @@ String getFidoWebsiteInfo(const String &rpId) {
     return result;
 }
 
+// TOTP seeds share the password vault key because they are only exposed after PIN auth.
 void saveTotpSecret(const String &name, const String &secret) {
     if (!isStorageKeyLoaded) return;
-    
+
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     JsonDocument doc;
     if (SPIFFS.exists("/totp.json")) {
@@ -644,20 +645,20 @@ void saveTotpSecret(const String &name, const String &secret) {
             file.close();
         }
     }
-    
+
     String encryptedValue = encryptStoragePayload(secret, storageKey);
     if (encryptedValue == "") {
         xSemaphoreGive(storageMutex);
         return;
     }
-    
+
     doc[name] = encryptedValue;
     File file = SPIFFS.open("/totp.json", "w");
     if (!file) {
         xSemaphoreGive(storageMutex);
         return;
     }
-    
+
     serializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
@@ -666,21 +667,21 @@ void saveTotpSecret(const String &name, const String &secret) {
 
 String getTotpSecret(const String &name) {
     if (!isStorageKeyLoaded) return "";
-    
+
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     File file = SPIFFS.open("/totp.json", "r");
     if (!file) {
         xSemaphoreGive(storageMutex);
         return "";
     }
-    
+
     JsonDocument doc;
     deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    
+
     if (!doc[name].is<JsonVariant>()) return "";
-    
+
     String encryptedValue = doc[name].as<String>();
     return decryptStoragePayload(encryptedValue, storageKey);
 }

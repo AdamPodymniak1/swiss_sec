@@ -1,9 +1,6 @@
 #include "CborEngine.h"
 
-// =========================================================================
-// DETERMINISTIC ENCODER ARCHITECTURE
-// =========================================================================
-
+// Encoder writes definite-length CBOR forms used by CTAP2 request and response maps.
 bool CborEncoder::writeUnsignedInt(uint64_t val) {
     if (offset >= capacity) return false;
 
@@ -26,7 +23,6 @@ bool CborEncoder::writeUnsignedInt(uint64_t val) {
         buffer[offset++] = (val >> 8) & 0xFF;
         buffer[offset++] = val & 0xFF;
     } else {
-        // FIX: Added 64-bit handling to prevent silent data corruption
         if (offset + 8 >= capacity) return false;
         buffer[offset++] = (0 << 5) | 27;
         buffer[offset++] = (val >> 56) & 0xFF;
@@ -44,7 +40,6 @@ bool CborEncoder::writeUnsignedInt(uint64_t val) {
 bool CborEncoder::writeMapHeader(size_t elements) {
     if (offset >= capacity) return false;
 
-    // Major type 5 = map
     if (elements < 24) {
         buffer[offset++] = (5 << 5) | (elements & 0x1F);
         return true;
@@ -102,7 +97,7 @@ bool CborEncoder::writeTextString(const char *text) {
         buffer[offset++] = (uint8_t)len;
     } 
     else {
-        return false; // WebAuthn should NEVER need this
+        return false; 
     }
 
     memcpy(&buffer[offset], text, len);
@@ -110,13 +105,10 @@ bool CborEncoder::writeTextString(const char *text) {
     return true;
 }
 
-// =========================================================================
-// BOUNDS-CHECKED STREAMING DECODER ARCHITECTURE
-// =========================================================================
-
+// Parser methods roll back on shape mismatches so callers can skip unknown fields safely.
 bool CborParser::readTypeAndValue(uint8_t &majorType, uint64_t &value) {
     if (offset >= length) return false;
-    
+
     uint8_t initialByte = buffer[offset++];
     majorType = (initialByte >> 5) & 0x07;
     uint8_t additionalInfo = initialByte & 0x1F;
@@ -133,21 +125,21 @@ bool CborParser::readTypeAndValue(uint8_t &majorType, uint64_t &value) {
         value = ((uint64_t)buffer[offset] << 8) | buffer[offset + 1];
         offset += 2;
         return true;
-    } else if (additionalInfo == 26) { // Added 32-bit support required by browsers
+    } else if (additionalInfo == 26) { 
         if (offset + 3 >= length) return false;
         value = ((uint64_t)buffer[offset] << 24) | ((uint64_t)buffer[offset + 1] << 16) | 
                 ((uint64_t)buffer[offset + 2] << 8) | buffer[offset + 3];
         offset += 4;
         return true;
-    } else if (additionalInfo == 27) { // Added 64-bit support
+    } else if (additionalInfo == 27) { 
         if (offset + 7 >= length) return false;
         value = 0;
         for (int i = 0; i < 8; i++) {
             value = (value << 8) | buffer[offset++];
         }
         return true;
-    } else if (additionalInfo == 0x1F) { // INDEFINITE LENGTH MARKER
-        value = 0xFFFFFFFFFFFFFFFFULL; // Sentinel value representing indefinite length
+    } else if (additionalInfo == 0x1F) { 
+        value = 0xFFFFFFFFFFFFFFFFULL; 
         return true;
     }
     return false;
@@ -174,8 +166,6 @@ bool CborParser::readByteString(uint8_t *destBuffer, size_t maxLen, size_t &actu
     return true;
 }
 
-// Add to CborEngine.cpp
-
 bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
     uint8_t majorType;
     uint64_t strLen;
@@ -192,16 +182,15 @@ bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
     }
 
     memcpy(destBuffer, &buffer[offset], strLen);
-    destBuffer[strLen] = '\0'; // Ensure null-termination
+    destBuffer[strLen] = '\0'; 
     offset += strLen;
     return true;
 }
 
-// Deep structural skipper to cleanly bypass elements we don't care about
+// Unknown CBOR values are skipped recursively to tolerate optional browser fields.
 bool CborParser::skipValue() {
     if (offset >= length) return false;
 
-    // Direct check for indefinite-length break terminator
     if (buffer[offset] == 0xFF) {
         offset++;
         return true;
@@ -212,44 +201,44 @@ bool CborParser::skipValue() {
     if (!readTypeAndValue(majorType, value)) return false;
 
     switch (majorType) {
-        case 0: // Unsigned Int
-        case 1: // Negative Int
-        case 7: // Simple Value / Float
+        case 0: 
+        case 1: 
+        case 7: 
             return true; 
-        case 2: // Byte String
-        case 3: // Text String
-            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite-length string chunk sequence
+        case 2: 
+        case 3: 
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
                     if (!skipValue()) return false;
                 }
                 if (offset >= length) return false;
-                offset++; // Consume 0xFF
+                offset++; 
                 return true;
             }
             if (offset + value > length) return false;
             offset += value;
             return true;
-        case 4: // Array
-            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite Array
+        case 4: 
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
                     if (!skipValue()) return false;
                 }
                 if (offset >= length) return false;
-                offset++; // Consume 0xFF
+                offset++; 
                 return true;
             }
             for (uint64_t i = 0; i < value; i++) {
                 if (!skipValue()) return false;
             }
             return true;
-        case 5: // Map
-            if (value == 0xFFFFFFFFFFFFFFFFULL) { // Indefinite Map
+        case 5: 
+            if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
-                    if (!skipValue()) return false; // Skip Key
-                    if (!skipValue()) return false; // Skip Value
+                    if (!skipValue()) return false; 
+                    if (!skipValue()) return false; 
                 }
                 if (offset >= length) return false;
-                offset++; // Consume 0xFF
+                offset++; 
                 return true;
             }
             for (uint64_t i = 0; i < value * 2; i++) {
@@ -263,8 +252,7 @@ bool CborParser::skipValue() {
 
 bool CborEncoder::writeArrayHeader(size_t elements) {
     if (offset >= capacity) return false;
-    
-    // Major type 4 (Array)
+
     if (elements < 24) {
         buffer[offset++] = (4 << 5) | elements;
         return true;
@@ -274,14 +262,13 @@ bool CborEncoder::writeArrayHeader(size_t elements) {
         buffer[offset++] = (uint8_t)elements;
         return true;
     }
-    // (Expansion for larger arrays can be added here if needed)
+
     return false;
 }
 
 bool CborEncoder::writeBoolean(bool value) {
     if (offset >= capacity) return false;
-    
-    // Major type 7, values 20 (false) and 21 (true)
+
     buffer[offset++] = (7 << 5) | (value ? 21 : 20);
     return true;
 }
@@ -301,18 +288,18 @@ bool CborEncoder::writeNegativeInt(int64_t val) {
         buffer[offset++] = (1 << 5) | uval;
     } 
     else if (uval <= 0xFF) {
-        if (offset + 1 >= capacity) return false; // FIX: Added bounds check
+        if (offset + 1 >= capacity) return false; 
         buffer[offset++] = (1 << 5) | 24;
         buffer[offset++] = (uint8_t)uval;
     } 
     else if (uval <= 0xFFFF) {
-        if (offset + 2 >= capacity) return false; // FIX: Added bounds check
+        if (offset + 2 >= capacity) return false; 
         buffer[offset++] = (1 << 5) | 25;
         buffer[offset++] = (uval >> 8) & 0xFF;
         buffer[offset++] = uval & 0xFF;
     } 
     else if (uval <= 0xFFFFFFFF) {
-        if (offset + 4 >= capacity) return false; // FIX: Added missing 32-bit support
+        if (offset + 4 >= capacity) return false; 
         buffer[offset++] = (1 << 5) | 26;
         buffer[offset++] = (uval >> 24) & 0xFF;
         buffer[offset++] = (uval >> 16) & 0xFF;
@@ -320,7 +307,7 @@ bool CborEncoder::writeNegativeInt(int64_t val) {
         buffer[offset++] = uval & 0xFF;
     }
     else {
-        if (offset + 8 >= capacity) return false; // FIX: Added missing 64-bit support
+        if (offset + 8 >= capacity) return false; 
         buffer[offset++] = (1 << 5) | 27;
         buffer[offset++] = (uval >> 56) & 0xFF;
         buffer[offset++] = (uval >> 48) & 0xFF;
@@ -337,7 +324,7 @@ bool CborEncoder::writeNegativeInt(int64_t val) {
 
 bool CborEncoder::writeNull() {
     if (offset >= capacity) return false;
-    // Major type 7, simple value 22 (Null)
+
     buffer[offset++] = (7 << 5) | 22;
     return true;
 }

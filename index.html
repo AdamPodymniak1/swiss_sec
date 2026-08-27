@@ -33,13 +33,12 @@ const connectBtn = document.getElementById('connectBtn');
 const inputField = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 
-// Hardened Hex <-> Buffer Helpers
+// Firmware messages can include boot noise, so hex parsing keeps only byte characters.
 function bufferToHex(buffer) {
     return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function hexToBuffer(hex) {
-    // Strip out spaces, colons, newlines or carriage returns that firmware might inject
     const cleanHex = hex.replace(/[^0-9a-fA-F]/g, '');
     const bytes = new Uint8Array(Math.ceil(cleanHex.length / 2));
     for (let i = 0; i < bytes.length; i++) {
@@ -57,7 +56,7 @@ async function connect() {
     try {
         port = await navigator.serial.requestPort();
         await port.open({ baudRate: 115200 });
-        
+
         connectBtn.innerText = "Disconnect";
         inputField.disabled = false;
         sendBtn.disabled = false;
@@ -66,17 +65,15 @@ async function connect() {
 
         readLoop();
 
-        // 1. Generate P-256 (SECP256R1) Keypair to match mbedTLS config
+        // Start the encrypted serial tunnel before sending PIN or vault commands.
         localKeyPair = await crypto.subtle.generateKey(
             { name: 'ECDH', namedCurve: 'P-256' }, 
             true, 
             ['deriveBits']
         );
-        
-        // Exports as raw uncompressed ANSI X9.62 format (65 bytes starting with 0x04)
+
         const pubKeyRaw = await crypto.subtle.exportKey("raw", localKeyPair.publicKey);
-        
-        // 2. Send Public Key to initialize Diffie-Hellman
+
         terminal.innerText += "[System] Initiating Handshake...\n";
         await sendRaw(`DH_INIT:${bufferToHex(pubKeyRaw)}\n`);
     } catch (err) {
@@ -114,31 +111,29 @@ async function readLoop() {
         try {
             const { value, done } = await reader.read();
             if (done) break;
-            
+
             rxBuffer += new TextDecoder().decode(value);
             let lines = rxBuffer.split('\n');
-            rxBuffer = lines.pop(); // Keep incomplete chunk in buffer
+            // Keep the unfinished tail because Web Serial can split a line anywhere.
+            rxBuffer = lines.pop(); 
 
             for (let line of lines) {
                 line = line.trim();
                 if (!line) continue;
 
-                // FIX: Look for the token anywhere in the line to bypass bootloader garbage
                 if (line.includes("DH_ACK:")) {
                     try {
-                        // Split at the token and grab everything after it
+                        // Split on the token instead of assuming it starts the line.
                         const rawHexData = line.split("DH_ACK:")[1].trim();
                         let espPubKeyRaw = hexToBuffer(rawHexData);
-                        
-                        // Auto-prepend 0x04 uncompressed prefix if microcontroller sent 64 bytes
+
                         if (espPubKeyRaw.length === 64) {
                             const normalizedKey = new Uint8Array(65);
                             normalizedKey[0] = 0x04;
                             normalizedKey.set(espPubKeyRaw, 1);
                             espPubKeyRaw = normalizedKey;
                         }
-                        
-                        // Import ESP32 public key point
+
                         const espPubKey = await crypto.subtle.importKey(
                             "raw", 
                             espPubKeyRaw, 
@@ -146,32 +141,31 @@ async function readLoop() {
                             true, 
                             []
                         );
-                        
-                        // Compute Shared Secret and generate symmetrical AES-GCM Key
+
                         const sharedSecret = await crypto.subtle.deriveBits(
                             { name: 'ECDH', public: espPubKey }, 
                             localKeyPair.privateKey, 
                             256
                         );
-                        
+
                         const hash = await crypto.subtle.digest("SHA-256", sharedSecret);
                         aesKey = await crypto.subtle.importKey("raw", hash, {name: "AES-GCM"}, false, ["encrypt", "decrypt"]);
-                        
+
                         terminal.innerText += "[System] Secure AES-256-GCM Tunnel Established.\n";
                         await sendSecure("RESTART_SYSTEM");
                     } catch (cryptoErr) {
                         terminal.innerText += `[System Error] Key exchange calculation broken: ${cryptoErr.message}\n`;
                     }
                 } 
-                // FIX: Protect encryption packets from potential mid-stream glitches too
+
                 else if (line.includes("ENC:")) {
                     if (!aesKey) continue;
-                    
+
                     const cryptoData = line.split("ENC:")[1].trim();
                     const parts = cryptoData.split(":");
                     const iv = hexToBuffer(parts[0]);
                     const cipherWithTag = hexToBuffer(parts[1]);
-                    
+
                     try {
                         const decrypted = await crypto.subtle.decrypt({name: "AES-GCM", iv: iv}, aesKey, cipherWithTag);
                         terminal.innerText += new TextDecoder().decode(decrypted);
@@ -181,7 +175,6 @@ async function readLoop() {
                     }
                 } 
                 else {
-                    // Plain text bypass for hardware bootup maps, panics, and raw status codes
                     terminal.innerText += line + "\n";
                     terminal.scrollTop = terminal.scrollHeight;
                 }
@@ -203,21 +196,21 @@ async function sendSecure(text) {
         return;
     }
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    
-    // WebCrypto automatically appends the 16-byte authentication tag to ciphertext
+
+    // WebCrypto appends the 16-byte authentication tag to the ciphertext.
     const cipherBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: iv }, 
         aesKey, 
         new TextEncoder().encode(text)
     );
-    
+
     const payload = `ENC:${bufferToHex(iv)}:${bufferToHex(cipherBuffer)}\n`;
     await sendRaw(payload);
 }
 
 const handleSendAction = async () => {
     if (inputField.value.trim() === "") return;
-    
+
     await sendSecure(inputField.value.trim()); 
     inputField.value = "";
 };

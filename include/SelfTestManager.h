@@ -1,4 +1,4 @@
 #pragma once
 
-// Main entry point to run the entire diagnostic suite
+// Runs the onboard diagnostic suite from the serial CLI.
 void runFullSystemDiagnostics();

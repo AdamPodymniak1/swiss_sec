@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 
+// Small CBOR encoder/decoder tailored to the CTAP2 structures this firmware uses.
 class CborEncoder {
 private:
     uint8_t *buffer;
@@ -35,7 +36,6 @@ public:
     const uint8_t *buffer;
     size_t length;
     size_t offset;
-
 
     CborParser(const uint8_t *srcBuffer, size_t srcLen) {
         buffer = srcBuffer;

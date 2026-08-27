@@ -12,6 +12,7 @@
 #include "USB.h"
 #include "USBCDC.h"
 
+// HID polling gets its own task so FIDO traffic stays responsive during serial waits.
 void fidoTask(void *pvParameters) {
     while (1) {
         FidoHID.poll();
@@ -36,6 +37,7 @@ void cliTask(void *pvParameters) {
                 continue;
             }
 
+            // Once the tunnel is active, only encrypted host commands are accepted.
             if (rawInput.startsWith("ENC:")) {
                 input = decryptMsg(rawInput);
                 if (input == "") continue;
@@ -93,6 +95,7 @@ void cliTask(void *pvParameters) {
                 }
             }
 
+            // The CLI uses explicit states for prompts that need a second response.
             switch (currentCommandState) {
                 case STATE_READY:
                     if (input == "help") {
@@ -130,14 +133,14 @@ void cliTask(void *pvParameters) {
                             authenticated = false;
                             Terminal.println("[AUTH] STATUS:FACTORY_RESET_COMPLETE");
                             showDisplayMessage(1, "WIPING HARDWARE", "", 0);
-                            
+
                             xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
                             finger.emptyDatabase();
                             xSemaphoreGive(fingerprintMutex);
-                            
+
                             Terminal.println("[SYS] FINGERPRINT DATABASE WIPED");
                             vTaskDelay(1000 / portTICK_PERIOD_MS);
-                            
+
                             showDisplayMessage(1, "SYSTEM RESET", "", 2000);
                             ESP.restart();
                         } else {
@@ -293,12 +296,10 @@ void setup() {
         neopixelWrite(RGB_BUILTIN, 0, 0, 0);
     #endif
 
-    // MUST initialize u8g2 hardware controller first!
     xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.begin();
     xSemaphoreGive(displayMutex);
 
-    // Now safe to use your helper function
     showDisplayMessage(1, "BOOTING...", "", 0);
 
     Serial.begin(115200);

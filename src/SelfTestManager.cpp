@@ -1,4 +1,3 @@
-// SelfTestManager.cpp
 #include "SelfTestManager.h"
 #include "Globals.h"
 #include "DisplayManager.h"
@@ -7,6 +6,7 @@
 #include "StorageManager.h"
 #include "mbedtls/ecdsa.h"
 
+// Diagnostics stay small and serial-readable so they can run on the device itself.
 void printTestResult(const char* featureName, bool success) {
     if (success) {
         Serial.print("[TEST:PASS] -> ");
@@ -41,13 +41,13 @@ bool testCryptoSubsystem() {
 
     uint8_t mockPrivKey[32] = {0};
     uint8_t mockPubKey[65] = {0};
-    
+
     if (!generateKeypairP256(mockPrivKey, mockPubKey)) {
         printTestResult("Crypto: ECDSA P-256 Keypair Generation", false);
         allPassed = false;
     } else {
         printTestResult("Crypto: ECDSA P-256 Keypair Generation", true);
-        
+
         if (mockPubKey[0] != 0x04) {
             printTestResult("Crypto: P-256 Public Component Envelope Structure", false);
             allPassed = false;
@@ -78,10 +78,10 @@ bool testStorageSubsystem() {
 
     String mockAccount = "test_mock_user_123";
     String mockSecret = "SuperSecurePassword99!";
-    
+
     savePassword(mockAccount, mockSecret);
     String retrievedSecret = getPasswordFromStorage(mockAccount);
-    
+
     if (retrievedSecret != mockSecret) {
         printTestResult("Storage: Vault Data Read/Write Integrity", false);
         allPassed = false;
@@ -124,7 +124,7 @@ bool testFingerprintSubsystem() {
 #else
     if (finger.verifyPassword()) {
         printTestResult("Hardware: Optical Biometric UART Connection Handshake", true);
-        
+
         finger.getTemplateCount();
         Serial.print("[SYS:INFO] Current Loaded Fingerprint Templates: ");
         Serial.println(finger.templateCount);
@@ -141,7 +141,7 @@ void runFullSystemDiagnostics() {
     Serial.println("\n====================================================");
     Serial.println("[DIAGNOSTICS] INITIATING FULL HARDWARE & SOFTWARE TESTS");
     Serial.println("====================================================");
-    
+
     showDisplayMessage(1, "DIAGNOSTICS", "", 0);
 
     int totalTestsPassed = 0;
