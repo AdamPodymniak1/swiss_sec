@@ -45,4 +45,6 @@ bool generateAlgSignature(int algId, const String &privateKeyHex, const uint8_t 
 int decodeBase32(const char* b32, uint8_t* out);
 String generateTOTP(const String& base32Secret, uint32_t unixTime);
 
+void getFidoHardwareKey(byte *outKey256);
+
 #endif

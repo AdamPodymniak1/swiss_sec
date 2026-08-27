@@ -12,104 +12,144 @@ void initFingerprintSensor() {
     Serial.println("SIMULATOR READY");
 #else
     mySerial.begin(57600, SERIAL_8N1, FINGERPRINT_RX, FINGERPRINT_TX);
-    finger.begin(57600);
     
-    if (finger.verifyPassword()) {
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+    finger.begin(57600);
+    bool verified = finger.verifyPassword();
+    xSemaphoreGive(fingerprintMutex);
+    
+    if (verified) {
         Serial.println("READY");
     } else {
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "SENSOR ERROR!");
         u8g2.sendBuffer();
-        delay(2000);
+        xSemaphoreGive(displayMutex);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
 #endif
 }
 
 bool enrollFingerprint(uint8_t id) {
 #if USE_FINGERPRINT_SIMULATOR
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "Press Button 1");
     u8g2.sendBuffer();
-    while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { delay(50); }
-    while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(50); }
+    xSemaphoreGive(displayMutex);
+    
+    while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { vTaskDelay(50 / portTICK_PERIOD_MS); }
+    while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
 
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "Press Button 2");
     u8g2.sendBuffer();
-    while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { delay(50); }
-    while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(50); }
+    xSemaphoreGive(displayMutex);
+    
+    while(digitalRead(SIMULATOR_BUTTON_PIN) == HIGH) { vTaskDelay(50 / portTICK_PERIOD_MS); }
+    while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
 
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "STORED OK");
     u8g2.sendBuffer();
-    delay(2000);
+    xSemaphoreGive(displayMutex);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
     return true;
 #else
     int p = -1;
+    
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "Place finger");
     u8g2.sendBuffer();
+    xSemaphoreGive(displayMutex);
 
     while (p != FINGERPRINT_OK) {
+        xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
         p = finger.getImage();
+        xSemaphoreGive(fingerprintMutex);
         if (p != FINGERPRINT_OK) {
-            delay(50);
+            vTaskDelay(50 / portTICK_PERIOD_MS);
         }
     }
 
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     p = finger.image2Tz(1);
+    xSemaphoreGive(fingerprintMutex);
     if (p != FINGERPRINT_OK) return false;
 
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "Remove finger");
     u8g2.sendBuffer();
-    delay(1500); 
+    xSemaphoreGive(displayMutex);
+    
+    vTaskDelay(1500 / portTICK_PERIOD_MS);
     p = 0;
     while (p != FINGERPRINT_NOFINGER) {
+        xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
         p = finger.getImage();
-        delay(50);
+        xSemaphoreGive(fingerprintMutex);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 
+    xSemaphoreTake(displayMutex, portMAX_DELAY);
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(0, 15, "Place SAME");
     u8g2.drawStr(0, 30, "finger again");
     u8g2.sendBuffer();
+    xSemaphoreGive(displayMutex);
 
     p = -1;
     while (p != FINGERPRINT_OK) {
+        xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
         p = finger.getImage();
+        xSemaphoreGive(fingerprintMutex);
         if (p != FINGERPRINT_OK) {
-            delay(50);
+            vTaskDelay(50 / portTICK_PERIOD_MS);
         }
     }
 
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     p = finger.image2Tz(2);
+    xSemaphoreGive(fingerprintMutex);
     if (p != FINGERPRINT_OK) return false;
 
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     p = finger.createModel();
+    xSemaphoreGive(fingerprintMutex);
     if (p != FINGERPRINT_OK) {
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "MISMATCH!");
         u8g2.sendBuffer();
-        delay(3000);
+        xSemaphoreGive(displayMutex);
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
         return false;
     }
 
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     p = finger.storeModel(id);
+    xSemaphoreGive(fingerprintMutex);
     if (p == FINGERPRINT_OK) {
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "STORED OK");
         u8g2.sendBuffer();
-        delay(2000);
+        xSemaphoreGive(displayMutex);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
         return true;
     } else {
         return false;
@@ -122,7 +162,7 @@ void updateFingerprintAsync() {
 
 #if USE_FINGERPRINT_SIMULATOR
     if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
-        while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(50); }
+        while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
         String challengeNonce = generateRandomPassword(16);
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
@@ -134,29 +174,40 @@ void updateFingerprintAsync() {
         pendingPasswordToTransmit = "";
         currentCommandState = STATE_READY;
         
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "TRANSMITTED!");
         u8g2.sendBuffer();
+        xSemaphoreGive(displayMutex);
     }
 #else
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     uint8_t imageResult = finger.getImage();
+    xSemaphoreGive(fingerprintMutex);
 
     for (uint8_t retry = 0; retry < 3 && imageResult != FINGERPRINT_OK && imageResult != FINGERPRINT_NOFINGER; retry++) {
-        delay(50);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+        xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
         imageResult = finger.getImage();
+        xSemaphoreGive(fingerprintMutex);
     }
 
     if (imageResult == FINGERPRINT_OK) {
+        xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
         uint8_t tzResult = finger.image2Tz();
+        xSemaphoreGive(fingerprintMutex);
         
         if (tzResult == FINGERPRINT_OK) {
-            String challengeNonce = generateRandomPassword(16); 
+            String challengeNonce = generateRandomPassword(16);
             
-            if (finger.fingerSearch() == FINGERPRINT_OK) {
-                uint8_t matchedID = finger.fingerID;
-                uint8_t matchConfidence = finger.confidence;
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            uint8_t searchResult = finger.fingerSearch();
+            uint8_t matchedID = finger.fingerID;
+            uint8_t matchConfidence = finger.confidence;
+            xSemaphoreGive(fingerprintMutex);
 
+            if (searchResult == FINGERPRINT_OK) {
                 if (matchConfidence > 50) { 
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 
@@ -168,39 +219,46 @@ void updateFingerprintAsync() {
                     pendingPasswordToTransmit = ""; 
                     currentCommandState = STATE_READY;
                     
+                    xSemaphoreTake(displayMutex, portMAX_DELAY);
                     u8g2.clearBuffer();
                     u8g2.setFont(u8g2_font_ncenB08_tr);
                     u8g2.drawStr(0, 15, "TRANSMITTED!");
                     u8g2.sendBuffer();
+                    xSemaphoreGive(displayMutex);
 
                     unsigned long startWait = millis();
-                    while (millis() - startWait < 1200) { yield(); }
+                    while (millis() - startWait < 1200) { vTaskDelay(10 / portTICK_PERIOD_MS); }
                     
+                    xSemaphoreTake(displayMutex, portMAX_DELAY);
                     u8g2.clearBuffer();
                     u8g2.setFont(u8g2_font_ncenB08_tr);
                     u8g2.drawStr(0, 15, "Logged In");
                     u8g2.sendBuffer();
+                    xSemaphoreGive(displayMutex);
                 } else {
+                    xSemaphoreTake(displayMutex, portMAX_DELAY);
                     u8g2.clearBuffer();
                     u8g2.setFont(u8g2_font_ncenB08_tr);
                     u8g2.drawStr(0, 15, "Try again");
                     u8g2.sendBuffer();
-                    delay(1000);
+                    xSemaphoreGive(displayMutex);
+                    vTaskDelay(1000 / portTICK_PERIOD_MS);
                 }
             } else {
+                xSemaphoreTake(displayMutex, portMAX_DELAY);
                 u8g2.clearBuffer();
                 u8g2.setFont(u8g2_font_ncenB08_tr);
                 u8g2.drawStr(0, 15, "Unknown Finger");
                 u8g2.sendBuffer();
-                delay(1000);
-                delay(1000);
+                xSemaphoreGive(displayMutex);
+                vTaskDelay(2000 / portTICK_PERIOD_MS);
             }
         } else {
-            delay(500); 
+            vTaskDelay(500 / portTICK_PERIOD_MS);
         }
     } 
     else if (imageResult != FINGERPRINT_NOFINGER) {
-        delay(500);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 #endif
 }

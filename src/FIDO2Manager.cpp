@@ -55,20 +55,32 @@ void savePersistedSignCount(uint32_t count) {
 bool fidoVerifyFingerprint() {
 #if USE_FINGERPRINT_SIMULATOR
     if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
-        while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { delay(10); }
+        while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(10 / portTICK_PERIOD_MS); }
         return true;
     }
     return false;
 #else
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     uint8_t img = finger.getImage();
     for (uint8_t retry = 0; retry < 3 && img != FINGERPRINT_OK && img != FINGERPRINT_NOFINGER; retry++) {
-        delay(50);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
         img = finger.getImage();
     }
-    if (img != FINGERPRINT_OK) return false;              
-    if (finger.image2Tz() != FINGERPRINT_OK) return false;
-    if (finger.fingerSearch() != FINGERPRINT_OK) return false;
-    return finger.confidence > 50;
+    if (img != FINGERPRINT_OK) {
+        xSemaphoreGive(fingerprintMutex);
+        return false;
+    }
+    if (finger.image2Tz() != FINGERPRINT_OK) {
+        xSemaphoreGive(fingerprintMutex);
+        return false;
+    }
+    if (finger.fingerSearch() != FINGERPRINT_OK) {
+        xSemaphoreGive(fingerprintMutex);
+        return false;
+    }
+    bool result = finger.confidence > 50;
+    xSemaphoreGive(fingerprintMutex);
+    return result;
 #endif
 }
 
@@ -177,7 +189,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
     uint8_t* payload = &data[7];
 
     if (ins == 0x01) {
-        if (reqLen != 64 || !authenticated || !fidoVerifyFingerprint()) {
+        if (reqLen != 64 || !fidoVerifyFingerprint()) {
             uint8_t err[] = {0x69, 0x85};
             sendCtapResponse(channel, 0x03, err, 2);
             return;
@@ -432,12 +444,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1);
         return;
     }
-    else if (ctap2Cmd == 0x01) { 
-        if (!authenticated) {
-            uint8_t err = 0x31; 
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            return; 
-        }
+    else if (ctap2Cmd == 0x01) {
 
         char targetRpId[128] = {0};
         uint8_t clientDataHash[32] = {0};
@@ -595,11 +602,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         }
 
-        
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "PLACE FINGER");
         u8g2.sendBuffer();
+        xSemaphoreGive(displayMutex);
         
         bool biometricVerified = false;
         bool biometricCanceled = false;
@@ -627,14 +635,18 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (biometricCanceled) {
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
+            xSemaphoreGive(displayMutex);
             uint8_t err = 0x2D; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
         }
 
         if (!biometricVerified) {
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
+            xSemaphoreGive(displayMutex);
             uint8_t err = 0x34; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -663,12 +675,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (!keygenSuccess) {
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
             u8g2.setFont(u8g2_font_ncenB08_tr);
             u8g2.drawStr(0, 15, "REG FAILED");
             u8g2.sendBuffer();
+            xSemaphoreGive(displayMutex);
             delay(2000);
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
+            xSemaphoreGive(displayMutex);
             uint8_t err = 0x01; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -682,6 +698,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         // Save credential directly via StorageManager mapped to appropriate generic alg identifier
         if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId)) {
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(0, 15, "SAVE FAILED");
+            u8g2.sendBuffer();
+            xSemaphoreGive(displayMutex);
             uint8_t err = 0x21; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             return;
@@ -795,10 +817,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "REG SUCCESS");
         u8g2.sendBuffer();
+        xSemaphoreGive(displayMutex);
         return;
     }
     else if (ctap2Cmd == 0x02) {
@@ -982,10 +1006,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             if (millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
             } else {
+                xSemaphoreTake(displayMutex, portMAX_DELAY);
                 u8g2.clearBuffer();
                 u8g2.setFont(u8g2_font_ncenB08_tr);
                 u8g2.drawStr(0, 15, "VERIFY FINGER");
                 u8g2.sendBuffer();
+                xSemaphoreGive(displayMutex);
 
                 bool biometricCanceled = false;
                 unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
@@ -1009,7 +1035,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
                 // Handle early abort due to browser cancellation
                 if (biometricCanceled) {
+                    xSemaphoreTake(displayMutex, portMAX_DELAY);
                     u8g2.clearBuffer();
+                    u8g2.setFont(u8g2_font_ncenB08_tr);
+                    u8g2.drawStr(0, 15, "CANCELLED");
+                    u8g2.sendBuffer();
+                    xSemaphoreGive(displayMutex);
                     uint8_t err = 0x2D; // CTAP2_ERR_KEEPALIVE_CANCEL
                     sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                     return;
@@ -1064,12 +1095,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             memset(hashedMessage, 0, sizeof(hashedMessage));
             memset(signBuffer, 0, sizeof(signBuffer));
 
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
             u8g2.setFont(u8g2_font_ncenB08_tr);
             u8g2.drawStr(0, 15, "SIGN FAILED");
             u8g2.sendBuffer();
+            xSemaphoreGive(displayMutex);
             delay(2000);
+            xSemaphoreTake(displayMutex, portMAX_DELAY);
             u8g2.clearBuffer();
+            xSemaphoreGive(displayMutex);
 
             uint8_t err = 0x01; 
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); 
@@ -1167,10 +1202,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             delay(10);
         #endif
 
+        xSemaphoreTake(displayMutex, portMAX_DELAY);
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "VERIFIED");
         u8g2.sendBuffer();
+        xSemaphoreGive(displayMutex);
         return;
     }
     else {

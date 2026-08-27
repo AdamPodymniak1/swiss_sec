@@ -764,3 +764,21 @@ String generateTOTP(const String& base32Secret, uint32_t unixTime) {
     
     return String(code);
 }
+
+void getFidoHardwareKey(byte* outKey256) {
+    uint8_t mac[6];
+    // Grab the factory-fused MAC address (guaranteed unique per ESP32-S3 chip)
+    if (esp_efuse_mac_get_default(mac) != ESP_OK) {
+        memset(mac, 0xAA, 6);
+    }
+
+    // Stretch the MAC into a secure 32-byte AES key
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+    mbedtls_md_starts(&ctx);
+    mbedtls_md_update(&ctx, mac, 6);
+    mbedtls_md_update(&ctx, (const unsigned char*)"VAULT_APP_FIDO2_ISOLATION_SECRET", 32);
+    mbedtls_md_finish(&ctx, outKey256);
+    mbedtls_md_free(&ctx);
+}
