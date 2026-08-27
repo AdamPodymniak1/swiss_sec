@@ -94,9 +94,7 @@ void loop() {
         u8g2.drawStr(0, 15, "AWAITING AUTH");
         u8g2.sendBuffer();
         Terminal.println("[SYS] STATUS:BOOT");
-        if (!isMasterPinSet()) {
-            Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
-        } else if (!isPinSet()) {
+        if (!isPinSet()) {
             Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
         } else {
             Terminal.println("[AUTH] STATUS:PIN_REQ");
@@ -119,26 +117,7 @@ void loop() {
         return;
     }
 
-    if (!isMasterPinSet()) {
-        if (currentCommandState != STATE_AWAITING_MASTER_PIN_SETUP) {
-            Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
-            Terminal.println("[AUTH] REQ:CREATE_MASTER_PIN");
-            Terminal.flush();
-            currentCommandState = STATE_AWAITING_MASTER_PIN_SETUP;
-            return;
-        } else {
-            if (createMasterPinPBKDF2(input)) {
-                Terminal.println("[AUTH] STATUS:MASTER_PIN_CREATED");
-                Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
-                currentCommandState = STATE_READY;
-            } else {
-                Terminal.println("[ERR] CODE:MASTER_PIN_GEN_FAIL");
-            }
-            Terminal.flush();
-            return;
-        }
-    }
-
+    // Single PIN Setup Flow
     if (!isPinSet()) {
         createPin(input);
         Terminal.println("[AUTH] STATUS:PIN_CREATED");
@@ -147,11 +126,11 @@ void loop() {
         return;
     }
 
+    // Authentication Flow
     if (!authenticated) {
         if (verifyPin(input)) {
             authenticated = true;
             deriveStorageKey(input); 
-            resetFailedMasterAttempts(); 
             
             u8g2.clearBuffer();
             u8g2.setFont(u8g2_font_ncenB08_tr);
@@ -162,38 +141,7 @@ void loop() {
             Terminal.println("[SYS] STATUS:READY");
             Terminal.flush();
             return;
-        }
-        else if (verifyMasterPinPBKDF2(input)) {
-            if (deletePin()) {
-                authenticated = false;
-                currentCommandState = STATE_READY;
-                
-                u8g2.clearBuffer();
-                u8g2.setFont(u8g2_font_ncenB08_tr);
-                u8g2.drawStr(0, 15, "MASTER RESET");
-                u8g2.drawStr(0, 30, "WIPING VAULT");
-                u8g2.sendBuffer();
-                
-                clearAllStoredPasswords();
-
-                
-                u8g2.clearBuffer();
-                u8g2.setFont(u8g2_font_ncenB08_tr);
-                u8g2.drawStr(0, 15, "WIPED");
-                u8g2.sendBuffer();
-                
-                Terminal.println("[AUTH] STATUS:MASTER_RESET_SUCCESS_VAULT_PURGED");
-                Terminal.flush();
-                
-                delay(2000);
-                ESP.restart();
-            } else {
-                Terminal.println("[ERR] CODE:NO_USER_PIN_FOUND");
-            }
-            Terminal.flush();
-            return;
-        }
-        else {
+        } else {
             Terminal.println("[AUTH] STATUS:INVALID");
             Terminal.flush();
             return;
@@ -213,8 +161,9 @@ void loop() {
                 Terminal.println("  list_fido       - List all saved FIDO2 website names");
                 Terminal.println("  get_fido        - Read stored FIDO2 website info and users");
                 Terminal.println("  delete_fido     - Wipe a FIDO2 website and all saved keys");
-                Terminal.println("  delete_pin      - Reset the system by deleting current PIN");
-                Terminal.println("  delete_master   - Reset Master PIN data file storage layout");
+                Terminal.println("  totp_add        - Add a new Base32 TOTP secret");
+                Terminal.println("  totp_get        - Generate a 6-digit TOTP code");
+                Terminal.println("  delete_pin      - FACTORY RESET (Wipes PIN, Vault, & Fingerprints)");
                 Terminal.println("  delete_pass     - Purge vault passwords and passkeys");
                 Terminal.println("  diagnostics     - Run automated verification testing suite");
                 Terminal.println("====================================================");
@@ -240,16 +189,7 @@ void loop() {
             else if (input == "delete_pin") {
                 if (deletePin()) {
                     authenticated = false;
-                    Terminal.println("[AUTH] STATUS:PIN_DELETED");
-                    Terminal.println("[AUTH] STATUS:NEW_PIN_REQ");
-                } else {
-                    Terminal.println("[ERR] CODE:NO_PIN_FOUND");
-                }
-            }
-            else if (input == "delete_master") {
-                if (deleteMasterPin()) {
-                    authenticated = false;
-                    Terminal.println("[AUTH] STATUS:MASTER_PIN_DELETED");
+                    Terminal.println("[AUTH] STATUS:FACTORY_RESET_COMPLETE");
                     
                     u8g2.clearBuffer();
                     u8g2.setFont(u8g2_font_ncenB08_tr);
@@ -260,20 +200,14 @@ void loop() {
                     Terminal.println("[SYS] FINGERPRINT DATABASE WIPED");
                     delay(1000);
 
-                    if (enrollFingerprint(1)) {
-                        Terminal.println("[SYS] NEW MASTER FINGERPRINT SET");
-                    } else {
-                        Terminal.println("[ERR] HARDWARE ENROLLMENT FAILED");
-                    }
-                    
                     u8g2.clearBuffer();
                     u8g2.setFont(u8g2_font_ncenB08_tr);
-                    u8g2.drawStr(0, 15, "AWAITING AUTH");
+                    u8g2.drawStr(0, 15, "SYSTEM RESET");
                     u8g2.sendBuffer();
-
-                    Terminal.println("[AUTH] STATUS:NO_MASTER_PIN_SET");
+                    delay(2000);
+                    ESP.restart(); // Reboot to clear RAM and start fresh
                 } else {
-                    Terminal.println("[ERR] CODE:NO_MASTER_FOUND");
+                    Terminal.println("[ERR] CODE:NO_PIN_FOUND");
                 }
             }
             else if (input == "delete_pass") {

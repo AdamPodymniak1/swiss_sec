@@ -1,4 +1,3 @@
-// SelfTestManager.cpp
 #include "SelfTestManager.h"
 #include "Globals.h"
 #include "DisplayManager.h"
@@ -74,7 +73,6 @@ bool testCryptoSubsystem() {
 bool testStorageSubsystem() {
     bool allPassed = true;
 
-    bool initialMasterSet = isMasterPinSet();
     bool initialPinSet = isPinSet();
 
     String mockAccount = "test_mock_user_123";

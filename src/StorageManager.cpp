@@ -28,53 +28,6 @@ bool initStorage() {
   return SPIFFS.begin(true);
 }
 
-bool isMasterPinSet() { 
-  return SPIFFS.exists("/master_hash.bin") && SPIFFS.exists("/master_salt.bin"); 
-}
-
-bool saveMasterPinData(const uint8_t *hash, size_t hashLen, const uint8_t *salt, size_t saltLen) {
-  File hashFile = SPIFFS.open("/master_hash.bin", "w");
-  if (!hashFile) return false;
-  hashFile.write(hash, hashLen);
-  hashFile.close();
-
-  File saltFile = SPIFFS.open("/master_salt.bin", "w");
-  if (!saltFile) {
-    SPIFFS.remove("/master_hash.bin"); 
-    return false;
-  }
-  saltFile.write(salt, saltLen);
-  saltFile.close();
-  return true;
-}
-
-bool readMasterPinData(uint8_t *hashOut, size_t hashLen, uint8_t *saltOut, size_t saltLen) {
-  if (!isMasterPinSet()) return false;
-
-  File hashFile = SPIFFS.open("/master_hash.bin", "r");
-  if (!hashFile || hashFile.size() != hashLen) { 
-    if (hashFile) hashFile.close(); 
-    return false; 
-  }
-  hashFile.read(hashOut, hashLen);
-  hashFile.close();
-
-  File saltFile = SPIFFS.open("/master_salt.bin", "r");
-  if (!saltFile || saltFile.size() != saltLen) { 
-    if (saltFile) saltFile.close(); 
-    return false; 
-  }
-  saltFile.read(saltOut, saltLen);
-  saltFile.close();
-  return true;
-}
-
-bool deleteMasterPin() {
-  bool deletedHash = SPIFFS.remove("/master_hash.bin");
-  bool deletedSalt = SPIFFS.remove("/master_salt.bin");
-  return deletedHash || deletedSalt;
-}
-
 String hashPin(const String &pin) {
   byte shaResult[32];
   mbedtls_md_context_t ctx;
@@ -97,12 +50,70 @@ void createPin(const String &pin) {
   file.close();
 }
 
+int getFailedPinAttempts() {
+  if (!SPIFFS.exists("/failures.txt")) return 0;
+  File file = SPIFFS.open("/failures.txt", "r");
+  if (!file) return 0;
+  String val = file.readString();
+  file.close();
+  return val.toInt();
+}
+
+void incrementFailedPinAttempts() {
+  int attempts = getFailedPinAttempts() + 1;
+  File file = SPIFFS.open("/failures.txt", "w");
+  if (file) {
+    file.print(attempts);
+    file.close();
+  }
+}
+
+void resetFailedPinAttempts() {
+  if (SPIFFS.exists("/failures.txt")) {
+    SPIFFS.remove("/failures.txt");
+  }
+}
+
+void factoryResetSystem() {
+    SPIFFS.remove("/passwords.json");
+    SPIFFS.remove("/passkeys.json");
+    SPIFFS.remove("/totp.json");
+    SPIFFS.remove("/pin.txt");
+    SPIFFS.remove("/failures.txt");
+}
+
+bool deletePin() {
+  if (SPIFFS.exists("/pin.txt")) {
+    factoryResetSystem(); // Full wipe triggered
+    return true;
+  }
+  return false;
+}
+
 bool verifyPin(const String &pin) {
   File file = SPIFFS.open("/pin.txt", "r");
   if (!file) return false;
   String storedHash = file.readString();
   file.close();
-  return storedHash == hashPin(pin);
+  
+  if (storedHash == hashPin(pin)) {
+    resetFailedPinAttempts();
+    return true;
+  } else {
+    incrementFailedPinAttempts();
+    int totalFailures = getFailedPinAttempts();
+
+    if (totalFailures >= 10) {
+      Terminal.println("[SECURITY] CRITICAL:MAX_ATTEMPTS_EXCEEDED_WIPING_DEVICE");
+      Terminal.flush();
+      factoryResetSystem();
+      ESP.restart();
+    } else {
+      Terminal.print("[SECURITY] WARN:PIN_BAD_ATTEMPT:");
+      Terminal.printf("%d/10\n", totalFailures);
+    }
+    return false;
+  }
 }
 
 bool isPasswordExists(const String &name) {
@@ -217,46 +228,6 @@ void showStorageInfo() {
   }
   // Emits structured stats easily extracted via single string splits
   Terminal.printf("[STORAGE] STATS:%d,%d,%d,%.2f,%d,%d,%.2f\n", total, used, free, usage, count, chars, avg);
-}
-
-bool deletePin() {
-  if (SPIFFS.exists("/pin.txt")) {
-    return SPIFFS.remove("/pin.txt");
-  }
-  return false; // Return false if there was no PIN file to delete
-}
-
-int getFailedMasterAttempts() {
-  if (!SPIFFS.exists("/failures.txt")) return 0;
-  File file = SPIFFS.open("/failures.txt", "r");
-  if (!file) return 0;
-  String val = file.readString();
-  file.close();
-  return val.toInt();
-}
-
-void incrementFailedMasterAttempts() {
-  int attempts = getFailedMasterAttempts() + 1;
-  File file = SPIFFS.open("/failures.txt", "w");
-  if (file) {
-    file.print(attempts);
-    file.close();
-  }
-}
-
-void resetFailedMasterAttempts() {
-  if (SPIFFS.exists("/failures.txt")) {
-    SPIFFS.remove("/failures.txt");
-  }
-}
-
-void factoryResetSystem() {
-    SPIFFS.remove("/passwords.json");
-    SPIFFS.remove("/passkeys.json");
-    SPIFFS.remove("/pin.txt");
-    SPIFFS.remove("/master_hash.bin");
-    SPIFFS.remove("/master_salt.bin");
-    SPIFFS.remove("/failures.txt");
 }
 
 void clearAllStoredPasswords() {

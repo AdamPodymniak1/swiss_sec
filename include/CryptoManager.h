@@ -16,9 +16,6 @@ String encryptMsg(const String &plainText);
 String decryptMsg(const String &encryptedPayload);
 void processHandshake(const String &browserPubKeyHex);
 
-bool createMasterPinPBKDF2(const String &input);
-bool verifyMasterPinPBKDF2(const String &input);
-
 String generateRandomPassword(size_t length = 16);
 String hashSHA256(const String &input);
 

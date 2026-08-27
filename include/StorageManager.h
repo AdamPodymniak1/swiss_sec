@@ -11,15 +11,10 @@ String hashPin(const String &pin);
 bool isPinSet();
 void createPin(const String &pin);
 bool verifyPin(const String &pin);
+int getFailedPinAttempts();
+void incrementFailedPinAttempts();
+void resetFailedPinAttempts();
 
-bool isMasterPinSet();
-bool saveMasterPinData(const uint8_t *hash, size_t hashLen, const uint8_t *salt, size_t saltLen);
-bool readMasterPinData(uint8_t *hashOut, size_t hashLen, uint8_t *saltOut, size_t saltLen);
-bool deleteMasterPin();
-
-int getFailedMasterAttempts();
-void incrementFailedMasterAttempts();
-void resetFailedMasterAttempts();
 void factoryResetSystem();
 
 bool isPasswordExists(const String &name);

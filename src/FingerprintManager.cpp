@@ -127,7 +127,7 @@ void updateFingerprintAsync() {
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
         
-        Terminal.println(computedResponse);
+        //Terminal.println(computedResponse);
         Terminal.println(pendingPasswordToTransmit);
         Terminal.flush();
         
@@ -137,14 +137,6 @@ void updateFingerprintAsync() {
         u8g2.clearBuffer();
         u8g2.setFont(u8g2_font_ncenB08_tr);
         u8g2.drawStr(0, 15, "TRANSMITTED!");
-        u8g2.sendBuffer();
-
-        unsigned long startWait = millis();
-        while (millis() - startWait < 1200) { yield(); }
-        
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB08_tr);
-        u8g2.drawStr(0, 15, "Logged In");
         u8g2.sendBuffer();
     }
 #else
