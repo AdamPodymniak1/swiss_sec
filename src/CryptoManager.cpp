@@ -9,6 +9,7 @@
 #include "mbedtls/asn1write.h"
 #include "mbedtls/error.h"
 #include "StorageManager.h"
+#include <Ed25519.h>
 
 #define PBKDF2_ITERATIONS 10000
 #define HASH_SIZE 32
@@ -572,43 +573,20 @@ static int mbedtls_fido2_rng(void *p_rng, unsigned char *output, size_t output_l
 
 // Generates an Ed25519 keypair and outputs the private key as hex and the public key as raw bytes
 bool generateEd25519KeyPair(String& privateKeyHexOut, uint8_t* pubKeyXOut) {
-#if defined(MBEDTLS_ECP_DP_ED25519)
-    mbedtls_pk_context ctx;
-    mbedtls_pk_init(&ctx);
-
-    if (mbedtls_pk_setup(&ctx, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0) {
-        mbedtls_pk_free(&ctx);
-        return false;
-    }
-
-    // Generate Ed25519 curve key pair using our corrected RNG wrapper
-    if (mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_ED25519, mbedtls_pk_ec(ctx), mbedtls_fido2_rng, NULL) != 0) {
-        mbedtls_pk_free(&ctx);
-        return false;
-    }
-
-    // Extract private key hex
-    unsigned char privBuf[32];
-    size_t privLen = 0;
-    mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(ctx);
-    mbedtls_mpi_write_binary(&ecp->d, privBuf, 32);
+    uint8_t priv[32];
+    uint8_t pub[32];
     
-    privateKeyHexOut = "";
-    for(int i = 0; i < 32; i++) {
-        if(privBuf[i] < 0x10) privateKeyHexOut += "0";
-        privateKeyHexOut += String(privBuf[i], HEX);
-    }
-
-    // Extract public key point X coordinate
-    mbedtls_ecp_point_write_binary(&ecp->grp, &ecp->Q, MBEDTLS_ECP_PF_COMPRESSED, &privLen, pubKeyXOut, 32);
-
-    mbedtls_pk_free(&ctx);
+    // Utilize ESP32 hardware RNG for secure key generation
+    esp_fill_random(priv, 32);
+    
+    // Derive public key via Crypto library
+    Ed25519::derivePublicKey(pub, priv);
+    
+    // Format outputs using your existing hex helper
+    privateKeyHexOut = toHex(priv, 32);
+    memcpy(pubKeyXOut, pub, 32);
+    
     return true;
-#else
-    // Fallback if the underlying ESP32 framework config disables Ed25519
-    Serial.println("[ERR] Ed25519 not supported by this ESP32 mbedTLS build config.");
-    return false;
-#endif
 }
 
 // Generates a 2048-bit RSA key pair
@@ -658,27 +636,21 @@ bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t*
         return generateFido2Signature(privateKeyHex, hash, hashLen, sigOut, sigLen);
     } 
     else if (algId == -8) { // EdDSA
-#if defined(MBEDTLS_ECP_DP_ED25519)
         uint8_t privBin[32];
-        for (size_t i = 0; i < 32; i++) {
-            privBin[i] = strtol(privateKeyHex.substring(i*2, i*2+2).c_str(), NULL, 16);
-        }
-
-        mbedtls_pk_context ctx;
-        mbedtls_pk_init(&ctx);
-        mbedtls_pk_setup(&ctx, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
-        mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(ctx);
-        mbedtls_ecp_group_load(&ecp->grp, MBEDTLS_ECP_DP_ED25519);
-        mbedtls_mpi_read_binary(&ecp->d, privBin, 32);
+        uint8_t pubBin[32];
         
-        size_t slen = 0;
-        int ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_NONE, hash, hashLen, sigOut, &slen, mbedtls_fido2_rng, NULL);
-        *sigLen = slen;
-        mbedtls_pk_free(&ctx);
-        return (ret == 0);
-#else
-        return false;
-#endif
+        // Convert hex back to binary
+        fromHex(privateKeyHex, privBin, 32);
+        Ed25519::derivePublicKey(pubBin, privBin);
+        
+        // Sign the hash
+        Ed25519::sign(sigOut, privBin, pubBin, hash, hashLen);
+        *sigLen = 64; // Ed25519 signatures are exactly 64 bytes
+        
+        // Securely clear private key from stack memory
+        memset(privBin, 0, sizeof(privBin));
+        
+        return true;
     }
     else if (algId == -257) { // RS256
         size_t derLen = privateKeyHex.length() / 2;

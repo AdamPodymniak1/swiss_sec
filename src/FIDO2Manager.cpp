@@ -195,6 +195,11 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
             return;
         }
 
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr); 
+        u8g2.drawStr(30, 22, "WAITING");
+        u8g2.sendBuffer();
+
         uint8_t privKey[32];
         uint8_t pubKey[65];
         if (!generateKeypairP256(privKey, pubKey)) {
@@ -281,6 +286,11 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
             sendCtapResponse(channel, 0x03, err, 2);
             return;
         }
+
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(30, 22, "WAITING");
+        u8g2.sendBuffer();
 
         uint32_t ctr = loadPersistedSignCount() + 1;
         savePersistedSignCount(ctr);
@@ -504,14 +514,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                         }
                     }
                 }
-                // Key 0x06: pubKeyCredParams array (Select the cryptographic algorithm requested by client)
-                else if (mapKey == 0x06) {
+                else if (mapKey == 0x04) {
                     uint8_t arrType; uint64_t arrCount;
                     if (parser.readTypeAndValue(arrType, arrCount) && arrType == 4) {
-                        bool algorithmicMatchFound = false;
+                        bool foundES256 = false;
+                        
                         for (uint64_t a = 0; a < arrCount; a++) {
                             uint8_t mapType; uint64_t mapElements;
                             int currentAlgId = 0;
+                            
                             if (parser.readTypeAndValue(mapType, mapElements) && mapType == 5) {
                                 for (uint64_t j = 0; j < mapElements; j++) {
                                     char paramKey[32] = {0};
@@ -522,20 +533,23 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                         uint8_t typeVal; uint64_t rawVal;
                                         if (parser.readTypeAndValue(typeVal, rawVal)) {
                                             if (typeVal == 0) currentAlgId = (int)rawVal;
-                                            else if (typeVal == 1) currentAlgId = -(int)rawVal;
+                                            else if (typeVal == 1) currentAlgId = -1 -(int)rawVal;
                                         }
                                     } else { parser.skipValue(); }
                                 }
-                                // Pick Ed25519 (-8), P-256 (-7), or RS256 (-257) if supported
-                                if (!algorithmicMatchFound && (currentAlgId == -7 || currentAlgId == -8 || currentAlgId == -257)) {
+                                
+                                // Prioritize -7 (ES256) to avoid 10-second RSA blocking delays
+                                if (currentAlgId == -7) {
+                                    selectedAlgId = -7;
+                                    foundES256 = true;
+                                } else if (!foundES256 && (currentAlgId == -8 || currentAlgId == -257)) {
                                     selectedAlgId = currentAlgId;
-                                    algorithmicMatchFound = true;
                                 }
                             } else { parser.skipValue(); }
                         }
                     } else { parser.skipValue(); }
                 }
-                else if (mapKey == 0x04) { 
+                else if (mapKey == 0x06) { 
                     uint8_t extType; uint64_t extElements;
                     if (parser.readTypeAndValue(extType, extElements) && extType == 5) {
                         for (uint64_t j = 0; j < extElements; j++) {
