@@ -8,3 +8,5 @@ String pendingPasswordToTransmit = "";
 SemaphoreHandle_t displayMutex = NULL;
 SemaphoreHandle_t fingerprintMutex = NULL;
 SemaphoreHandle_t storageMutex = NULL;
+
+QueueHandle_t cryptoQueue = NULL;

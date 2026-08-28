@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/queue.h>
 
 #define USE_FINGERPRINT_SIMULATOR 1
 #define SIMULATOR_BUTTON_PIN 4
@@ -24,6 +25,13 @@ enum SystemState {
     STATE_AWAITING_TOTP_GET
 };
 
+struct CryptoRequest {
+    uint32_t channel;
+    uint8_t cmd;
+    uint16_t len;
+    uint8_t data[1024];
+};
+
 extern SystemState currentCommandState;
 extern String pendingName;
 extern bool authenticated;
@@ -32,5 +40,7 @@ extern String pendingPasswordToTransmit;
 extern SemaphoreHandle_t displayMutex;
 extern SemaphoreHandle_t fingerprintMutex;
 extern SemaphoreHandle_t storageMutex;
+
+extern QueueHandle_t cryptoQueue;
 
 #endif

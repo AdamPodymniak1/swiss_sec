@@ -12,7 +12,15 @@
 #include "USB.h"
 #include "USBCDC.h"
 
-// HID polling gets its own task so FIDO traffic stays responsive during serial waits.
+void cryptoTask(void *pvParameters) {
+    CryptoRequest req;
+    while (1) {
+        if (xQueueReceive(cryptoQueue, &req, portMAX_DELAY) == pdTRUE) {
+            
+        }
+    }
+}
+
 void fidoTask(void *pvParameters) {
     while (1) {
         FidoHID.poll();
@@ -37,7 +45,6 @@ void cliTask(void *pvParameters) {
                 continue;
             }
 
-            // Once the tunnel is active, only encrypted host commands are accepted.
             if (rawInput.startsWith("ENC:")) {
                 input = decryptMsg(rawInput);
                 if (input == "") continue;
@@ -95,7 +102,6 @@ void cliTask(void *pvParameters) {
                 }
             }
 
-            // The CLI uses explicit states for prompts that need a second response.
             switch (currentCommandState) {
                 case STATE_READY:
                     if (input == "help") {
@@ -290,6 +296,8 @@ void setup() {
     displayMutex = xSemaphoreCreateMutex();
     fingerprintMutex = xSemaphoreCreateMutex();
     storageMutex = xSemaphoreCreateMutex();
+    
+    cryptoQueue = xQueueCreate(2, sizeof(CryptoRequest));
 
     #ifdef RGB_BUILTIN
         pinMode(RGB_BUILTIN, OUTPUT);
@@ -326,6 +334,7 @@ void setup() {
     showDisplayMessage(1, "AWAITING AUTH", "", 0);
 
     xTaskCreatePinnedToCore(fidoTask, "FidoTask", 8192, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(cryptoTask, "CryptoTask", 81920, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(cliTask, "CliTask", 8192, NULL, 1, NULL, 1);
 }
 
