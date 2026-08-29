@@ -10,3 +10,5 @@ SemaphoreHandle_t fingerprintMutex = NULL;
 SemaphoreHandle_t storageMutex = NULL;
 
 QueueHandle_t cryptoQueue = NULL;
+
+int defaultCryptoAlg = -7;

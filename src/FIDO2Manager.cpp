@@ -472,7 +472,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t userIdLen = 0;
         char userName[128] = {0};
         bool hmacSecretRequested = false;
-        int selectedAlgId = -7;
+        int selectedAlgId = defaultCryptoAlg;
 
         static const size_t MAX_EXCLUDE_CREDENTIALS = 16;
         uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][64];
@@ -525,6 +525,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 else if (mapKey == 0x04) {
                     uint8_t arrType; uint64_t arrCount;
                     if (parser.readTypeAndValue(arrType, arrCount) && arrType == 4) {
+                        bool foundDefault = false;
                         bool foundPQC = false;
                         bool foundES256 = false;
 
@@ -547,14 +548,20 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                     } else { parser.skipValue(); }
                                 }
 
-                                if (currentAlgId == -48 || currentAlgId == -49 || currentAlgId == -50) {
-                                    selectedAlgId = currentAlgId;
-                                    foundPQC = true;
-                                } else if (!foundPQC && currentAlgId == -7) {
-                                    selectedAlgId = -7;
-                                    foundES256 = true;
-                                } else if (!foundPQC && !foundES256 && (currentAlgId == -8 || currentAlgId == -257)) {
-                                    selectedAlgId = currentAlgId;
+                                if (currentAlgId == defaultCryptoAlg) {
+                                    selectedAlgId = defaultCryptoAlg;
+                                    foundDefault = true;
+                                } else if (!foundDefault) {
+                                    // Standard fallback priority if the website rejects the user's preferred default
+                                    if (currentAlgId == -48 || currentAlgId == -49 || currentAlgId == -50) {
+                                        selectedAlgId = currentAlgId;
+                                        foundPQC = true;
+                                    } else if (!foundPQC && currentAlgId == -7) {
+                                        selectedAlgId = -7;
+                                        foundES256 = true;
+                                    } else if (!foundPQC && !foundES256 && (currentAlgId == -8 || currentAlgId == -257)) {
+                                        selectedAlgId = currentAlgId;
+                                    }
                                 }
                             } else { parser.skipValue(); }
                         }

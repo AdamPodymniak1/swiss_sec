@@ -111,6 +111,7 @@ void cliTask(void *pvParameters) {
                         Terminal.println("  delete_pin      - FACTORY RESET (Wipes PIN, Vault, & Fingerprints)");
                         Terminal.println("  delete_pass     - Purge vault passwords and passkeys");
                         Terminal.println("  diagnostics     - Run automated verification testing suite");
+                        Terminal.println("  set_crypto      - Set default FIDO2 crypto alg (-7, -8, -257, -48, -49, -50)");
                         Terminal.println("====================================================");
                     } else if (input == "create") {
                         Terminal.println("[PASS] REQ:NAME");
@@ -172,6 +173,9 @@ void cliTask(void *pvParameters) {
                     } else if (input == "totp_get") {
                         Terminal.println("[TOTP] REQ:NAME");
                         currentCommandState = STATE_AWAITING_TOTP_GET;
+                    } else if (input == "set_crypto") {
+                        Terminal.println("[SYS] REQ:ALG_ID (-7=ES256, -8=Ed25519, -257=RSA, -48/-49/-50=PQC)");
+                        currentCommandState = STATE_AWAITING_CRYPTO_ALG;
                     } else {
                         Terminal.println("[ERR] CODE:UNKNOWN_CMD");
                     }
@@ -271,6 +275,19 @@ void cliTask(void *pvParameters) {
                     currentCommandState = STATE_READY;
                     break;
                 }
+                case STATE_AWAITING_CRYPTO_ALG: {
+                    int newAlg = input.toInt();
+                    if (newAlg == -7 || newAlg == -8 || newAlg == -257 || newAlg == -48 || newAlg == -49 || newAlg == -50) {
+                        defaultCryptoAlg = newAlg;
+                        saveDefaultCryptoAlg(defaultCryptoAlg);
+                        Terminal.print("[SYS] DEFAULT_CRYPTO_ALG_SET:");
+                        Terminal.println(defaultCryptoAlg);
+                    } else {
+                        Terminal.println("[ERR] CODE:INVALID_ALG_ID");
+                    }
+                    currentCommandState = STATE_READY;
+                    break;
+                }
                 default:
                     currentCommandState = STATE_READY;
                     break;
@@ -323,6 +340,8 @@ void setup() {
     initFingerprintSensor();
 
     showDisplayMessage(1, "AWAITING AUTH", "", 0);
+
+    defaultCryptoAlg = loadDefaultCryptoAlg();
 
     xTaskCreatePinnedToCore(fidoTask, "FidoTask", 8192, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(cliTask, "CliTask", 8192, NULL, 1, NULL, 1);

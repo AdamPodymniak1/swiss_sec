@@ -41,4 +41,7 @@ String getFidoWebsiteInfo(const String &rpId);
 void saveTotpSecret(const String &name, const String &secret);
 String getTotpSecret(const String &name);
 
+void saveDefaultCryptoAlg(int algId);
+int loadDefaultCryptoAlg();
+
 #endif

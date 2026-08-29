@@ -22,7 +22,8 @@ enum SystemState {
     STATE_AWAITING_FIDO_DELETE_NAME,
     STATE_AWAITING_TOTP_NAME,
     STATE_AWAITING_TOTP_SECRET,
-    STATE_AWAITING_TOTP_GET
+    STATE_AWAITING_TOTP_GET,
+    STATE_AWAITING_CRYPTO_ALG
 };
 
 struct CryptoRequest {
@@ -42,5 +43,7 @@ extern SemaphoreHandle_t fingerprintMutex;
 extern SemaphoreHandle_t storageMutex;
 
 extern QueueHandle_t cryptoQueue;
+
+extern int defaultCryptoAlg;
 
 #endif

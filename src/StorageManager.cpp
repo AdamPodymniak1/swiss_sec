@@ -119,6 +119,7 @@ void factoryResetSystem() {
     SPIFFS.remove("/totp.json");
     SPIFFS.remove("/pin.txt");
     SPIFFS.remove("/failures.txt");
+    SPIFFS.remove("/crypto_alg.txt");
     xSemaphoreGive(storageMutex);
 }
 
@@ -735,4 +736,31 @@ String getTotpSecret(const String &name) {
 
     String encryptedValue = doc[name].as<String>();
     return decryptStoragePayload(encryptedValue, storageKey);
+}
+
+void saveDefaultCryptoAlg(int algId) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/crypto_alg.txt", "w");
+    if (file) {
+        file.print(algId);
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+int loadDefaultCryptoAlg() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/crypto_alg.txt")) {
+        xSemaphoreGive(storageMutex);
+        return -7;
+    }
+    File file = SPIFFS.open("/crypto_alg.txt", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return -7;
+    }
+    String val = file.readString();
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return val.toInt();
 }
