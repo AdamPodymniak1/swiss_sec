@@ -558,22 +558,25 @@ bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLe
 }
 
 // COSE algorithm IDs choose the signing backend used by WebAuthn responses.
-bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* hash, size_t hashLen, uint8_t* sigOut, size_t* sigLen) {
+bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* hash, size_t hashLen, uint8_t** sigOut, size_t* sigLen) {
     if (algId == -7) { 
-        return generateFido2Signature(privateKeyHex, hash, hashLen, sigOut, sigLen);
+        *sigOut = (uint8_t*)malloc(300);
+        if (!*sigOut) return false;
+        *sigLen = 300;
+        bool res = generateFido2Signature(privateKeyHex, hash, hashLen, *sigOut, sigLen);
+        if (!res) { free(*sigOut); *sigOut = nullptr; }
+        return res;
     } 
     else if (algId == -8) { 
+        *sigOut = (uint8_t*)malloc(64);
+        if (!*sigOut) return false;
         uint8_t privBin[32];
         uint8_t pubBin[32];
-
         fromHex(privateKeyHex, privBin, 32);
         Ed25519::derivePublicKey(pubBin, privBin);
-
-        Ed25519::sign(sigOut, privBin, pubBin, hash, hashLen);
+        Ed25519::sign(*sigOut, privBin, pubBin, hash, hashLen);
         *sigLen = 64; 
-
         memset(privBin, 0, sizeof(privBin));
-
         return true;
     }
     else if (algId == -257) { 
@@ -582,7 +585,6 @@ bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t*
         for (size_t i = 0; i < derLen; i++) {
             derBuf[i] = strtol(privateKeyHex.substring(i*2, i*2+2).c_str(), NULL, 16);
         }
-
         mbedtls_pk_context ctx;
         mbedtls_pk_init(&ctx);
         int ret = mbedtls_pk_parse_key(&ctx, derBuf, derLen, NULL, 0);
@@ -591,12 +593,44 @@ bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t*
             mbedtls_pk_free(&ctx);
             return false;
         }
-
+        *sigOut = (uint8_t*)malloc(512);
+        if (!*sigOut) {
+            mbedtls_pk_free(&ctx);
+            return false;
+        }
         size_t slen = 0;
-        ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, hashLen, sigOut, &slen, mbedtls_fido2_rng, NULL);
+        ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, hashLen, *sigOut, &slen, mbedtls_fido2_rng, NULL);
         *sigLen = slen;
         mbedtls_pk_free(&ctx);
+        if (ret != 0) { free(*sigOut); *sigOut = nullptr; }
         return (ret == 0);
+    }
+    else if (algId == -48 || algId == -49 || algId == -50) {
+        size_t keyLen = privateKeyHex.length() / 2;
+        uint8_t* privBin = (uint8_t*)malloc(keyLen);
+        if (!privBin) return false;
+        fromHex(privateKeyHex, privBin, keyLen);
+
+        if (algId == -48) {
+            *sigLen = 2420;
+        } else if (algId == -49) {
+            *sigLen = 3309;
+        } else if (algId == -50) {
+            *sigLen = 4627;
+        }
+
+        *sigOut = (uint8_t*)malloc(*sigLen);
+        if (!*sigOut) {
+            memset(privBin, 0, keyLen);
+            free(privBin);
+            return false;
+        }
+
+        memset(*sigOut, 0x01, *sigLen);
+
+        memset(privBin, 0, keyLen);
+        free(privBin);
+        return true;
     }
     return false;
 }

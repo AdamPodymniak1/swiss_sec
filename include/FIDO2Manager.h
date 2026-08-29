@@ -7,7 +7,6 @@
 #include <EEPROM.h>
 #include "mbedtls/md.h"
 
-// Command bytes include the CTAPHID high bit used on initialization packets.
 #define CTAPHID_PING  0x81
 #define CTAPHID_MSG   0x83
 #define CTAPHID_INIT  0x86
@@ -29,9 +28,9 @@ class FIDO2HIDDevice : public USBHIDDevice {
 private:
     USBHID hid;
 
-    // Reassembly state for the active CTAPHID channel.
     uint32_t activeChannelID = 0;
-    uint8_t  ctapBuffer[1024];
+    uint8_t* ctapBuffer = nullptr;
+    uint16_t ctapBufferCapacity = 0;
     uint16_t ctapExpectedLen = 0;
     uint16_t ctapReceivedLen = 0;
     uint8_t  ctapExpectedSeq = 0;
@@ -40,14 +39,15 @@ private:
     unsigned long lastPacketTime = 0;
 
 public:
-    // HID callbacks queue one full command for poll() to process on the task loop.
     volatile bool hasPendingCommand = false;
     uint32_t pendingChannel = 0;
     uint8_t pendingCmd = 0;
-    uint8_t pendingData[1024];
+    uint8_t* pendingData = nullptr;
     uint16_t pendingLen = 0;
+    uint16_t pendingDataCapacity = 0;
 
     FIDO2HIDDevice();
+    ~FIDO2HIDDevice();
 
     void begin();
     uint16_t _onGetDescriptor(uint8_t* dst) override;
