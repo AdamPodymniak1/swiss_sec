@@ -706,11 +706,44 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             else if (selectedAlgId == -49) pubKeyLen = 1952;
             else if (selectedAlgId == -50) pubKeyLen = 2592;
 
+            size_t privKeyLen = 0;
+            if (selectedAlgId == -48) privKeyLen = 2560;
+            else if (selectedAlgId == -49) privKeyLen = 4032;
+            else if (selectedAlgId == -50) privKeyLen = 4896;
+
             pubKeyData = (uint8_t*)malloc(pubKeyLen);
-            if (pubKeyData) {
-                memset(pubKeyData, 0x01, pubKeyLen);
-                privateKeyHex = "01020304";
-                keygenSuccess = true;
+            uint8_t* privKeyData = (uint8_t*)malloc(privKeyLen);
+
+            if (pubKeyData && privKeyData) {
+                struct AsyncKeygen {
+                    int alg; uint8_t* priv; uint8_t* pub; volatile bool done; bool res;
+                } ctx = {selectedAlgId, privKeyData, pubKeyData, false, false};
+                
+                xTaskCreatePinnedToCore([](void* p){
+                    AsyncKeygen* c = (AsyncKeygen*)p;
+                    c->res = generateMlDsaKeyPair(c->alg, c->priv, c->pub);
+                    c->done = true;
+                    vTaskDelete(NULL);
+                }, "PQC_Keygen", 131072, &ctx, 1, NULL, 1);
+
+                unsigned long lastKeepAlive = millis();
+                while (!ctx.done) {
+                    if (millis() - lastKeepAlive > 300) {
+                        uint8_t status = 0x02; // 0x02 PROCESSING
+                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        lastKeepAlive = millis();
+                    }
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                }
+                keygenSuccess = ctx.res;
+
+                if (keygenSuccess) {
+                    privateKeyHex = toHex(privKeyData, privKeyLen);
+                }
+            }
+            if (privKeyData) {
+                memset(privKeyData, 0, privKeyLen);
+                free(privKeyData);
             }
         }
 
@@ -840,7 +873,35 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         uint8_t* attestationSig = nullptr;
         size_t attestationSigLen = 0;
 
-        bool sigSuccess = generateAlgSignature(selectedAlgId, privateKeyHex, attestationHash, 32, &attestationSig, &attestationSigLen);
+        size_t authDataLen = encoder.getOffset() - 1;
+        size_t rawMsgLen = authDataLen + 32;
+        uint8_t* rawMsg = (uint8_t*)malloc(rawMsgLen);
+        memcpy(rawMsg, &responseBuffer[2], authDataLen);
+        memcpy(rawMsg + authDataLen, clientDataHash, 32);
+
+        struct AsyncSign {
+            int alg; String pk; uint8_t* msg; size_t mLen; 
+            uint8_t** sig; size_t* sLen; volatile bool done; bool res;
+        } sCtx = {selectedAlgId, privateKeyHex, rawMsg, rawMsgLen, &attestationSig, &attestationSigLen, false, false};
+
+        xTaskCreatePinnedToCore([](void* p){
+            AsyncSign* c = (AsyncSign*)p;
+            c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
+            c->done = true;
+            vTaskDelete(NULL);
+        }, "PQC_Sign", 131072, &sCtx, 1, NULL, 1);
+
+        unsigned long lastKeepAliveSig = millis();
+        while (!sCtx.done) {
+            if (millis() - lastKeepAliveSig > 300) {
+                uint8_t status = 0x02;
+                sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                lastKeepAliveSig = millis();
+            }
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+        bool sigSuccess = sCtx.res;
+        free(rawMsg);
 
         if (!sigSuccess) {
             uint8_t err = 0x01;
@@ -1104,19 +1165,32 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         memcpy(signBuffer, authData, 37);
         memcpy(signBuffer + 37, clientDataHash, 32);
 
-        uint8_t hashedMessage[32];
-        mbedtls_md_init(&sha_ctx);
-        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
-        mbedtls_md_starts(&sha_ctx);
-        mbedtls_md_update(&sha_ctx, signBuffer, sizeof(signBuffer));
-        mbedtls_md_finish(&sha_ctx, hashedMessage);
-        mbedtls_md_free(&sha_ctx);
-
         uint8_t* signatureASN1 = nullptr;
         size_t finalSigLen = 0;
 
-        if (!generateAlgSignature(storedAlgId, storedPrivateKeyHex, hashedMessage, 32, &signatureASN1, &finalSigLen)) {
-            memset(hashedMessage, 0, sizeof(hashedMessage));
+        struct AsyncSignAuth {
+            int alg; String pk; uint8_t* msg; size_t mLen; 
+            uint8_t** sig; size_t* sLen; volatile bool done; bool res;
+        } sCtx = {storedAlgId, storedPrivateKeyHex, signBuffer, sizeof(signBuffer), &signatureASN1, &finalSigLen, false, false};
+
+        xTaskCreatePinnedToCore([](void* p){
+            AsyncSignAuth* c = (AsyncSignAuth*)p;
+            c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
+            c->done = true;
+            vTaskDelete(NULL);
+        }, "PQC_SignAuth", 131072, &sCtx, 1, NULL, 1);
+
+        unsigned long lastKeepAliveAuth = millis();
+        while (!sCtx.done) {
+            if (millis() - lastKeepAliveAuth > 300) {
+                uint8_t status = 0x02;
+                sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                lastKeepAliveAuth = millis();
+            }
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+
+        if (!sCtx.res) {
             memset(signBuffer, 0, sizeof(signBuffer));
 
             showDisplayMessage(1, "SIGN FAILED", "", 0);

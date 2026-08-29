@@ -558,48 +558,48 @@ bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLe
 }
 
 // COSE algorithm IDs choose the signing backend used by WebAuthn responses.
-bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* hash, size_t hashLen, uint8_t** sigOut, size_t* sigLen) {
+bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* msg, size_t msgLen, uint8_t** sigOut, size_t* sigLen) {
     if (algId == -7) { 
+        uint8_t hash[32];
+        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), msg, msgLen, hash);
+        
         *sigOut = (uint8_t*)malloc(300);
         if (!*sigOut) return false;
         *sigLen = 300;
-        bool res = generateFido2Signature(privateKeyHex, hash, hashLen, *sigOut, sigLen);
+        bool res = generateFido2Signature(privateKeyHex, hash, 32, *sigOut, sigLen);
         if (!res) { free(*sigOut); *sigOut = nullptr; }
         return res;
     } 
     else if (algId == -8) { 
         *sigOut = (uint8_t*)malloc(64);
         if (!*sigOut) return false;
-        uint8_t privBin[32];
-        uint8_t pubBin[32];
+        uint8_t privBin[32]; uint8_t pubBin[32];
         fromHex(privateKeyHex, privBin, 32);
         Ed25519::derivePublicKey(pubBin, privBin);
-        Ed25519::sign(*sigOut, privBin, pubBin, hash, hashLen);
+        Ed25519::sign(*sigOut, privBin, pubBin, msg, msgLen);
         *sigLen = 64; 
         memset(privBin, 0, sizeof(privBin));
         return true;
     }
     else if (algId == -257) { 
+        uint8_t hash[32];
+        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), msg, msgLen, hash);
+
         size_t derLen = privateKeyHex.length() / 2;
         uint8_t* derBuf = (uint8_t*)malloc(derLen);
-        for (size_t i = 0; i < derLen; i++) {
-            derBuf[i] = strtol(privateKeyHex.substring(i*2, i*2+2).c_str(), NULL, 16);
-        }
+        fromHex(privateKeyHex, derBuf, derLen);
+        
         mbedtls_pk_context ctx;
         mbedtls_pk_init(&ctx);
         int ret = mbedtls_pk_parse_key(&ctx, derBuf, derLen, NULL, 0);
         free(derBuf);
-        if (ret != 0) {
-            mbedtls_pk_free(&ctx);
-            return false;
-        }
+        if (ret != 0) { mbedtls_pk_free(&ctx); return false; }
+        
         *sigOut = (uint8_t*)malloc(512);
-        if (!*sigOut) {
-            mbedtls_pk_free(&ctx);
-            return false;
-        }
+        if (!*sigOut) { mbedtls_pk_free(&ctx); return false; }
+        
         size_t slen = 0;
-        ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, hashLen, *sigOut, &slen, mbedtls_fido2_rng, NULL);
+        ret = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, 32, *sigOut, &slen, mbedtls_fido2_rng, NULL);
         *sigLen = slen;
         mbedtls_pk_free(&ctx);
         if (ret != 0) { free(*sigOut); *sigOut = nullptr; }
@@ -611,26 +611,17 @@ bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t*
         if (!privBin) return false;
         fromHex(privateKeyHex, privBin, keyLen);
 
-        if (algId == -48) {
-            *sigLen = 2420;
-        } else if (algId == -49) {
-            *sigLen = 3309;
-        } else if (algId == -50) {
-            *sigLen = 4627;
-        }
+        if (algId == -48) *sigLen = 2420;
+        else if (algId == -49) *sigLen = 3309;
+        else if (algId == -50) *sigLen = 4627;
 
         *sigOut = (uint8_t*)malloc(*sigLen);
-        if (!*sigOut) {
-            memset(privBin, 0, keyLen);
-            free(privBin);
-            return false;
-        }
+        if (!*sigOut) { free(privBin); return false; }
 
-        memset(*sigOut, 0x01, *sigLen);
-
+        bool success = mldsa_sign(algId, *sigOut, sigLen, msg, msgLen, privBin);
         memset(privBin, 0, keyLen);
         free(privBin);
-        return true;
+        return success;
     }
     return false;
 }
@@ -712,4 +703,24 @@ void getFidoHardwareKey(byte* outKey256) {
     mbedtls_md_update(&ctx, (const unsigned char*)"VAULT_APP_FIDO2_ISOLATION_SECRET", 32);
     mbedtls_md_finish(&ctx, outKey256);
     mbedtls_md_free(&ctx);
+}
+
+extern "C" {
+    #include "api_mldsa44.h"
+    #include "api_mldsa65.h"
+    #include "api_mldsa87.h"
+}
+
+bool generateMlDsaKeyPair(int algId, uint8_t* privKeyOut, uint8_t* pubKeyOut) {
+    if (algId == -48) return PQCLEAN_MLDSA44_CLEAN_crypto_sign_keypair(pubKeyOut, privKeyOut) == 0;
+    if (algId == -49) return PQCLEAN_MLDSA65_CLEAN_crypto_sign_keypair(pubKeyOut, privKeyOut) == 0;
+    if (algId == -50) return PQCLEAN_MLDSA87_CLEAN_crypto_sign_keypair(pubKeyOut, privKeyOut) == 0;
+    return false;
+}
+
+bool mldsa_sign(int algId, uint8_t* sigOut, size_t* sigLen, const uint8_t* hash, size_t hashLen, const uint8_t* privKey) {
+    if (algId == -48) return PQCLEAN_MLDSA44_CLEAN_crypto_sign_signature(sigOut, sigLen, hash, hashLen, privKey) == 0;
+    if (algId == -49) return PQCLEAN_MLDSA65_CLEAN_crypto_sign_signature(sigOut, sigLen, hash, hashLen, privKey) == 0;
+    if (algId == -50) return PQCLEAN_MLDSA87_CLEAN_crypto_sign_signature(sigOut, sigLen, hash, hashLen, privKey) == 0;
+    return false;
 }
