@@ -12,15 +12,6 @@
 #include "USB.h"
 #include "USBCDC.h"
 
-void cryptoTask(void *pvParameters) {
-    CryptoRequest req;
-    while (1) {
-        if (xQueueReceive(cryptoQueue, &req, portMAX_DELAY) == pdTRUE) {
-            
-        }
-    }
-}
-
 void fidoTask(void *pvParameters) {
     while (1) {
         FidoHID.poll();
@@ -334,7 +325,6 @@ void setup() {
     showDisplayMessage(1, "AWAITING AUTH", "", 0);
 
     xTaskCreatePinnedToCore(fidoTask, "FidoTask", 8192, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(cryptoTask, "CryptoTask", 81920, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(cliTask, "CliTask", 8192, NULL, 1, NULL, 1);
 }
 
