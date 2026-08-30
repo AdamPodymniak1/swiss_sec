@@ -6,7 +6,6 @@
 HardwareSerial mySerial(1);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
-// Simulator mode keeps auth flows testable without the UART fingerprint module.
 void initFingerprintSensor() {
 #if USE_FINGERPRINT_SIMULATOR
     pinMode(SIMULATOR_BUTTON_PIN, INPUT_PULLUP);
@@ -42,6 +41,10 @@ bool enrollFingerprint(uint8_t id) {
     showDisplayMessage(1, "STORED OK", "", 2000);
     return true;
 #else
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+    finger.emptyDatabase();
+    xSemaphoreGive(fingerprintMutex);
+
     int p = -1;
 
     showDisplayMessage(1, "Place finger", "", 0);
@@ -108,7 +111,6 @@ bool enrollFingerprint(uint8_t id) {
 #endif
 }
 
-// Password release is polled from the CLI task instead of blocking on sensor reads.
 void updateFingerprintAsync() {
     if (currentCommandState != STATE_AWAITING_FINGERPRINT) return;
 
@@ -158,7 +160,6 @@ void updateFingerprintAsync() {
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 
 
-                    Terminal.println(computedResponse);
                     Terminal.println(pendingPasswordToTransmit);
                     Terminal.flush();
 

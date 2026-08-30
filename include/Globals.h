@@ -6,7 +6,7 @@
 #include <freertos/semphr.h>
 #include <freertos/queue.h>
 
-#define USE_FINGERPRINT_SIMULATOR 1
+#define USE_FINGERPRINT_SIMULATOR 0 // change to 1 when using the simulator button to simulate fingerprint verification
 #define SIMULATOR_BUTTON_PIN 4
 
 // CLI states model prompts that span more than one serial command.

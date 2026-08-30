@@ -112,6 +112,7 @@ void cliTask(void *pvParameters) {
                         Terminal.println("  delete_pass     - Purge vault passwords and passkeys");
                         Terminal.println("  diagnostics     - Run automated verification testing suite");
                         Terminal.println("  set_crypto      - Set default FIDO2 crypto alg (-7, -8, -257, -48, -49, -50)");
+                        Terminal.println("  register_finger - Register a new fingerprint for hardware approval");
                         Terminal.println("====================================================");
                     } else if (input == "create") {
                         Terminal.println("[PASS] REQ:NAME");
@@ -176,7 +177,15 @@ void cliTask(void *pvParameters) {
                     } else if (input == "set_crypto") {
                         Terminal.println("[SYS] REQ:ALG_ID (-7=ES256, -8=Ed25519, -257=RSA, -48/-49/-50=PQC)");
                         currentCommandState = STATE_AWAITING_CRYPTO_ALG;
-                    } else {
+                    } else if (input == "register_finger") {
+                        showDisplayMessage(1, "ENROLL FINGER", "", 0);
+                        if (enrollFingerprint(1)) {
+                            Terminal.println("[SYS] STATUS:FINGERPRINT_REGISTERED");
+                        } else {
+                            Terminal.println("[ERR] CODE:ENROLL_FAILED");
+                        }
+                    }
+                     else {
                         Terminal.println("[ERR] CODE:UNKNOWN_CMD");
                     }
                     break;
@@ -343,7 +352,7 @@ void setup() {
 
     defaultCryptoAlg = loadDefaultCryptoAlg();
 
-    xTaskCreatePinnedToCore(fidoTask, "FidoTask", 8192, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(fidoTask, "FidoTask", 32768, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(cliTask, "CliTask", 8192, NULL, 1, NULL, 1);
 }
 
