@@ -706,7 +706,33 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             pubKeyData = (uint8_t*)malloc(256);
             rsaE = (uint8_t*)malloc(3);
             if (pubKeyData && rsaE) {
-                keygenSuccess = generateRsa2048KeyPair(privateKeyHex, pubKeyData, &pubKeyLen, rsaE, &rsaELen);
+                struct AsyncRsaKeygen {
+                    String* pk;
+                    uint8_t* pub;
+                    size_t* pLen;
+                    uint8_t* e;
+                    size_t* eLen;
+                    volatile bool done;
+                    bool res;
+                } ctx = {&privateKeyHex, pubKeyData, &pubKeyLen, rsaE, &rsaELen, false, false};
+
+                xTaskCreatePinnedToCore([](void* p) {
+                    AsyncRsaKeygen* c = (AsyncRsaKeygen*)p;
+                    c->res = generateRsa2048KeyPair(*(c->pk), c->pub, c->pLen, c->e, c->eLen);
+                    c->done = true;
+                    vTaskDelete(NULL);
+                }, "RSA_Keygen", 65536, &ctx, 1, NULL, 1);
+
+                unsigned long lastKeepAlive = millis();
+                while (!ctx.done) {
+                    if (millis() - lastKeepAlive > 300) {
+                        uint8_t status = 0x02;
+                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        lastKeepAlive = millis();
+                    }
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                }
+                keygenSuccess = ctx.res;
             }
         } else if (selectedAlgId == -48 || selectedAlgId == -49 || selectedAlgId == -50) {
             if (selectedAlgId == -48) pubKeyLen = 1312;
