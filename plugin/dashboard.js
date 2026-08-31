@@ -73,7 +73,7 @@ async function connect() {
         terminal.innerText += "[System] Initiating Handshake...\n";
         await sendRaw(`DH_INIT:${bufferToHex(pubKeyRaw)}\n`);
     } catch (err) {
-        terminal.innerText += `[System Error] Initialization failed: ${err.message}\n`;
+        terminal.innerText += `[System Error] Initialization failed\n`;
     }
 }
 
@@ -107,7 +107,6 @@ function processIncomingLine(text) {
     else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
     else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
 
-    // Auto-generate macro state machine
     if (pendingAutoGenerate) {
         if (text.includes("[PASS] REQ:NAME")) {
             sendSecure(pendingAutoGenerate.domain);
@@ -116,26 +115,28 @@ function processIncomingLine(text) {
         }
     }
 
-    // Get password macro state machine
     if (pendingGetPassword) {
         if (text.includes("[PASS] REQ:NAME")) {
             sendSecure(pendingGetPassword.domain);
         } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
-            terminal.innerText += `[System] No password found for domain: ${pendingGetPassword.domain}\n`;
+            terminal.innerText += `[System] No password found\n`;
             pendingGetPassword = null;
             setAuthState("READY");
         }
     }
 
-    // Strict Password Parsing Logic looking for standard prefixes
     let passwordValue = null;
+    let safeText = text;
 
     if (text.includes("[PASS] GENERATED:")) {
         passwordValue = text.split("[PASS] GENERATED:")[1].trim();
+        safeText = text.replace(passwordValue, "********");
     } else if (text.includes("[PASS] VAL:")) {
         passwordValue = text.split("[PASS] VAL:")[1].trim();
+        safeText = text.replace(passwordValue, "********");
     } else if (text.includes("[PASS] OUT:") && !text.includes("SAVED") && !text.includes("DELETED")) {
         passwordValue = text.split("[PASS] OUT:")[1].trim();
+        safeText = text.replace(passwordValue, "********");
     }
 
     if (passwordValue) {
@@ -161,7 +162,7 @@ function processIncomingLine(text) {
         }
     }
 
-    terminal.innerText += text + "\n";
+    terminal.innerText += safeText + "\n";
     terminal.scrollTop = terminal.scrollHeight;
 }
 
@@ -208,7 +209,7 @@ async function readLoop() {
                         terminal.innerText += "[System] Secure Tunnel Established.\n";
                         await sendSecure("RESTART_SYSTEM");
                     } catch (cryptoErr) {
-                        terminal.innerText += `[System Error] Key exchange calculation broken: ${cryptoErr.message}\n`;
+                        terminal.innerText += `[System Error] Key exchange calculation broken\n`;
                     }
                 } 
                 else if (line.includes("ENC:")) {
@@ -270,7 +271,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "PING") {
         sendResponse({ connected: isConnected, authState: authState });
     } else if (message.type === "ACTIVE_SITE") {
-        terminal.innerText += `[Extension] Active site: ${message.hostname}\n`;
+        terminal.innerText += `[Extension] Active site\n`;
         terminal.scrollTop = terminal.scrollHeight;
         sendResponse({ status: "ok" });
     } else if (message.type === "AUTO_GENERATE") {

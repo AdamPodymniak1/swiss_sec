@@ -34,6 +34,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                         hostname: domain,
                         senderTabId: tab.id
                     });
+                } else {
+                    if (chrome.action.openPopup) {
+                        chrome.action.openPopup().catch(() => {});
+                    }
                 }
             });
         }
@@ -43,11 +47,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.target === "background" && message.type === "STATE_CHANGED") {
         if (message.authState === "AWAITING_FINGERPRINT") {
-            // Draw cyan badge on extension icon
             chrome.action.setBadgeText({ text: "TOUCH" });
             chrome.action.setBadgeBackgroundColor({ color: "#00FFFF" });
 
-            // Programmatically force extension popup window to open
             if (chrome.action.openPopup) {
                 chrome.action.openPopup().catch(() => {});
             }
