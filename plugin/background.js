@@ -1,5 +1,10 @@
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
+        id: "get-esp32-password",
+        title: "Autofill Saved Password",
+        contexts: ["editable", "page"]
+    });
+    chrome.contextMenus.create({
         id: "generate-esp32-password",
         title: "Generate ESP32 Password & Save",
         contexts: ["editable", "page"]
@@ -7,38 +12,66 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === "generate-esp32-password" && tab && tab.url) {
-        try {
-            let url = new URL(tab.url);
-            if (url.hostname) {
-                chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
-                    if (tabs.length > 0) {
-                        chrome.tabs.sendMessage(tabs[0].id, {
-                            target: "dashboard",
-                            type: "AUTO_GENERATE",
-                            hostname: url.hostname,
-                            senderTabId: tab.id
-                        });
-                    }
-                });
-            }
-        } catch(e) {}
-    }
+    if (!tab || !tab.url) return;
+    try {
+        let url = new URL(tab.url);
+        let domain = url.hostname || (url.protocol === "file:" ? "localfile" : null);
+        if (!domain) return;
+
+        let messageType = null;
+        if (info.menuItemId === "get-esp32-password") {
+            messageType = "GET_PASSWORD";
+        } else if (info.menuItemId === "generate-esp32-password") {
+            messageType = "AUTO_GENERATE";
+        }
+
+        if (messageType) {
+            chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
+                if (tabs.length > 0) {
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                        target: "dashboard",
+                        type: messageType,
+                        hostname: domain,
+                        senderTabId: tab.id
+                    });
+                }
+            });
+        }
+    } catch(e) {}
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.target === "dashboard") {
+    if (message.target === "background" && message.type === "STATE_CHANGED") {
+        if (message.authState === "AWAITING_FINGERPRINT") {
+            // Draw cyan badge on extension icon
+            chrome.action.setBadgeText({ text: "TOUCH" });
+            chrome.action.setBadgeBackgroundColor({ color: "#00FFFF" });
+
+            // Programmatically force extension popup window to open
+            if (chrome.action.openPopup) {
+                chrome.action.openPopup().catch(() => {});
+            }
+        } else {
+            chrome.action.setBadgeText({ text: "" });
+        }
+    } else if (message.target === "dashboard") {
         if (sender && sender.tab) {
             message.senderTabId = sender.tab.id;
         }
         chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
             if (tabs.length > 0) {
-                chrome.tabs.sendMessage(tabs[0].id, message, sendResponse);
+                chrome.tabs.sendMessage(tabs[0].id, message, (response) => {
+                    if (chrome.runtime.lastError) {
+                        sendResponse(null);
+                    } else {
+                        sendResponse(response);
+                    }
+                });
             } else {
                 sendResponse(null);
             }
         });
-        return true;
+        return true; 
     } else if (message.target === "content" && message.recipientTabId) {
         chrome.tabs.sendMessage(message.recipientTabId, message);
     }
@@ -49,11 +82,12 @@ function notifyActiveTab() {
         if (tabs.length > 0 && tabs[0].url) {
             try {
                 let url = new URL(tabs[0].url);
-                if (url.hostname) {
+                let domain = url.hostname || (url.protocol === "file:" ? "localfile" : null);
+                if (domain) {
                     chrome.runtime.sendMessage({
                         target: "dashboard",
                         type: "ACTIVE_SITE",
-                        hostname: url.hostname
+                        hostname: domain
                     }).catch(() => {});
                 }
             } catch(e) {}

@@ -27,6 +27,10 @@ function checkStatus() {
                 statusDiv.style.color = "orange";
                 authSection.style.display = 'block';
                 pinInput.placeholder = "Create New PIN";
+            } else if (response.authState === "AWAITING_FINGERPRINT") {
+                statusDiv.innerText = "Waiting for Fingerprint";
+                statusDiv.style.color = "#00ffff";
+                authSection.style.display = 'none';
             } else {
                 statusDiv.innerText = response.connected ? "Hardware Connected" : "Hardware Disconnected";
                 statusDiv.style.color = response.connected ? "lime" : "orange";

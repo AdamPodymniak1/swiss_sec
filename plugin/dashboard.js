@@ -4,11 +4,23 @@ let localKeyPair = null;
 let isConnected = false;
 let authState = "UNKNOWN";
 let pendingAutoGenerate = null;
+let pendingGetPassword = null;
 
 const terminal = document.getElementById('terminal');
 const connectBtn = document.getElementById('connectBtn');
 const inputField = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
+
+function setAuthState(newState) {
+    if (authState !== newState) {
+        authState = newState;
+        chrome.runtime.sendMessage({
+            target: "background",
+            type: "STATE_CHANGED",
+            authState: authState
+        }).catch(() => {});
+    }
+}
 
 function bufferToHex(buffer) {
     return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -74,8 +86,9 @@ async function disconnect() {
     }
     keepReading = false;
     isConnected = false;
-    authState = "UNKNOWN";
+    setAuthState("UNKNOWN");
     pendingAutoGenerate = null;
+    pendingGetPassword = null;
     if (reader) {
         await reader.cancel();
         reader.releaseLock();
@@ -88,11 +101,13 @@ async function disconnect() {
 }
 
 function processIncomingLine(text) {
-    if (text.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
-    else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
-    else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) authState = "READY";
-    else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
+    if (text.includes("[AUTH] STATUS:PIN_REQ")) setAuthState("PIN_REQ");
+    else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) setAuthState("NEW_PIN_REQ");
+    else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) setAuthState("READY");
+    else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
+    else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
 
+    // Auto-generate macro state machine
     if (pendingAutoGenerate) {
         if (text.includes("[PASS] REQ:NAME")) {
             sendSecure(pendingAutoGenerate.domain);
@@ -101,23 +116,46 @@ function processIncomingLine(text) {
         }
     }
 
+    // Get password macro state machine
+    if (pendingGetPassword) {
+        if (text.includes("[PASS] REQ:NAME")) {
+            sendSecure(pendingGetPassword.domain);
+        } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
+            terminal.innerText += `[System] No password found for domain: ${pendingGetPassword.domain}\n`;
+            pendingGetPassword = null;
+            setAuthState("READY");
+        }
+    }
+
+    // Strict Password Parsing Logic looking for standard prefixes
+    let passwordValue = null;
+
     if (text.includes("[PASS] GENERATED:")) {
-        const generatedPassword = text.split("[PASS] GENERATED:")[1].trim();
-        const targetTabId = pendingAutoGenerate ? pendingAutoGenerate.tabId : null;
+        passwordValue = text.split("[PASS] GENERATED:")[1].trim();
+    } else if (text.includes("[PASS] VAL:")) {
+        passwordValue = text.split("[PASS] VAL:")[1].trim();
+    } else if (text.includes("[PASS] OUT:") && !text.includes("SAVED") && !text.includes("DELETED")) {
+        passwordValue = text.split("[PASS] OUT:")[1].trim();
+    }
+
+    if (passwordValue) {
+        const targetTabId = pendingGetPassword ? pendingGetPassword.tabId : (pendingAutoGenerate ? pendingAutoGenerate.tabId : null);
         pendingAutoGenerate = null;
+        pendingGetPassword = null;
+        setAuthState("READY");
 
         if (targetTabId) {
             chrome.tabs.sendMessage(targetTabId, {
                 type: "FILL_CREDENTIALS",
-                password: generatedPassword
-            });
+                password: passwordValue
+            }).catch(() => {});
         } else {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs.length > 0) {
                     chrome.tabs.sendMessage(tabs[0].id, {
                         type: "FILL_CREDENTIALS",
-                        password: generatedPassword
-                    });
+                        password: passwordValue
+                    }).catch(() => {});
                 }
             });
         }
@@ -234,6 +272,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "ACTIVE_SITE") {
         terminal.innerText += `[Extension] Active site: ${message.hostname}\n`;
         terminal.scrollTop = terminal.scrollHeight;
+        sendResponse({ status: "ok" });
     } else if (message.type === "AUTO_GENERATE") {
         if (isConnected && authState === "READY") {
             pendingAutoGenerate = { 
@@ -242,10 +281,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             };
             sendSecure("create");
         }
+        sendResponse({ status: "ok" });
+    } else if (message.type === "GET_PASSWORD") {
+        if (isConnected && authState === "READY") {
+            pendingGetPassword = {
+                domain: message.hostname,
+                tabId: message.senderTabId
+            };
+            sendSecure("get");
+        }
+        sendResponse({ status: "ok" });
     } else if (message.type === "SEND") {
         sendSecure(message.payload);
+        sendResponse({ status: "ok" });
     } else if (message.type === "DISCONNECT") {
         disconnect();
+        sendResponse({ status: "ok" });
     }
     return true;
 });
