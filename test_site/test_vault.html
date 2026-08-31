@@ -2,116 +2,123 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>ESP32 Password Manager Test Bench</title>
+    <title>ESP32 Password Manager Test</title>
     <style>
         body { font-family: monospace; background: #121212; color: #e0e0e0; padding: 30px; }
-        .container { display: flex; gap: 30px; max-width: 900px; margin: 0 auto; }
-        .card { flex: 1; background: #1e1e1e; padding: 20px; border: 1px solid #333; border-radius: 6px; }
+        .container { max-width: 500px; margin: 0 auto; background: #1e1e1e; padding: 20px; border: 1px solid #333; border-radius: 6px; }
         h2 { color: #00ff00; border-bottom: 1px solid #333; padding-bottom: 8px; font-size: 1.1rem; }
         label { display: block; margin: 12px 0 4px; font-size: 0.85rem; color: #aaa; }
         input[type="text"], input[type="password"] {
             width: 100%; padding: 10px; box-sizing: border-box; background: #2a2a2a; 
             border: 1px solid #444; color: #fff; font-family: monospace; border-radius: 4px;
         }
-        .verifier-box {
-            max-width: 900px; margin: 30px auto 0; background: #1e1e1e; 
-            padding: 20px; border: 1px solid #333; border-radius: 6px; text-align: center;
-        }
         button {
-            background: #005f9e; color: #fff; border: none; padding: 10px 20px; 
-            cursor: pointer; font-family: monospace; border-radius: 4px; font-size: 0.9rem;
+            background: #005f9e; color: #fff; border: none; padding: 10px 15px; 
+            cursor: pointer; font-family: monospace; border-radius: 4px; font-size: 0.9rem; margin-top: 15px; width: 100%;
         }
         button:hover { background: #007acc; }
-        #statusResult { margin-top: 15px; font-weight: bold; font-size: 1.1rem; }
-        .match { color: #00ff00; }
-        .mismatch { color: #ff3333; }
-        .pending { color: #ffaa00; }
+        .hidden { display: none; }
+        .toggle-btn { background: #444; margin-bottom: 20px; }
+        .toggle-btn:hover { background: #555; }
+        .verify-btn { background: #008800; }
+        .verify-btn:hover { background: #00aa00; }
+        #status { margin-top: 15px; text-align: center; font-weight: bold; }
     </style>
 </head>
 <body>
-
-    <h1 style="text-align: center; color: #fff; margin-bottom: 30px;">ESP32 Vault Interception & Retrieval Test</h1>
-
     <div class="container">
-        <!-- REGISTRATION SECTION -->
-        <div class="card">
-            <h2>1. Registration Form</h2>
-            <form id="regForm">
-                <label>User Email</label>
+        <button id="switchBtn" class="toggle-btn">Switch to Registration</button>
+        
+        <div id="loginSection">
+            <h2>Login Form</h2>
+            <form onsubmit="event.preventDefault();">
+                <label>Email</label>
                 <input type="text" value="user@example.com" autocomplete="off">
+                <label>Password</label>
+                <input type="password" id="loginPass">
+                <button id="loadBtn">Load from Cache</button>
+                <button id="verifyBtn" class="verify-btn">Verify Match with Cache</button>
+            </form>
+        </div>
 
-                <label>New Password (Right-click to Generate)</label>
-                <input type="password" id="regPassword" placeholder="Right-click -> Generate ESP32 Password">
-
+        <div id="registerSection" class="hidden">
+            <h2>Registration Form</h2>
+            <form onsubmit="event.preventDefault();">
+                <label>Email</label>
+                <input type="text" value="user@example.com" autocomplete="off">
+                <label>New Password</label>
+                <input type="password" id="regPass">
                 <label>Confirm Password</label>
-                <input type="password" id="regConfirmPassword" placeholder="Autofilled automatically">
+                <input type="password" id="regConfirm">
+                <button id="saveBtn">Save to Cache</button>
             </form>
         </div>
 
-        <!-- LOGIN SECTION -->
-        <div class="card">
-            <h2>2. Login Form</h2>
-            <form id="loginForm">
-                <label>User Email</label>
-                <input type="text" value="user@example.com" autocomplete="off">
-
-                <label>Saved Password (Right-click to Retrieve)</label>
-                <input type="password" id="loginPassword" placeholder="Right-click -> Autofill Saved Password">
-            </form>
-        </div>
-    </div>
-
-    <!-- VERIFICATION SUITE -->
-    <div class="verifier-box">
-        <h2>3. Credential Verification Suite</h2>
-        <button id="verifyBtn">Verify Passwords Match</button>
-        <button id="toggleVisibilityBtn">Show Plaintext Passwords</button>
-        <div id="statusResult" class="pending">Status: Awaiting test actions...</div>
+        <div id="status"></div>
     </div>
 
     <script>
-        const regPass = document.getElementById('regPassword');
-        const regConfirmPass = document.getElementById('regConfirmPassword');
-        const loginPass = document.getElementById('loginPassword');
-        const statusResult = document.getElementById('statusResult');
+        const loginSection = document.getElementById('loginSection');
+        const registerSection = document.getElementById('registerSection');
+        const switchBtn = document.getElementById('switchBtn');
+        const loginPass = document.getElementById('loginPass');
+        const regPass = document.getElementById('regPass');
+        const regConfirm = document.getElementById('regConfirm');
+        const status = document.getElementById('status');
+        let isLogin = true;
 
-        // Check matching status live as inputs change
-        function evaluatePasswords() {
-            if (!regPass.value && !loginPass.value) {
-                statusResult.innerText = "Status: Awaiting test actions...";
-                statusResult.className = "pending";
-                return;
+        switchBtn.onclick = () => {
+            isLogin = !isLogin;
+            if (isLogin) {
+                loginSection.classList.remove('hidden');
+                registerSection.classList.add('hidden');
+                switchBtn.innerText = 'Switch to Registration';
+            } else {
+                loginSection.classList.add('hidden');
+                registerSection.classList.remove('hidden');
+                switchBtn.innerText = 'Switch to Login';
             }
-
-            if (regPass.value && loginPass.value) {
-                if (regPass.value === loginPass.value) {
-                    statusResult.innerText = `SUCCESS: Passwords Match! (${regPass.value.length} chars)`;
-                    statusResult.className = "match";
-                } else {
-                    statusResult.innerText = "FAILED: Registration and Login passwords DO NOT match!";
-                    statusResult.className = "mismatch";
-                }
-            } else if (regPass.value) {
-                statusResult.innerText = "Status: Password generated. Now try retrieving it on the Login form.";
-                statusResult.className = "pending";
-            }
-        }
-
-        document.getElementById('verifyBtn').onclick = evaluatePasswords;
-
-        // Toggle visibility to visually inspect strings
-        document.getElementById('toggleVisibilityBtn').onclick = () => {
-            const inputs = [regPass, regConfirmPass, loginPass];
-            const isPassword = regPass.type === "password";
-            inputs.forEach(input => input.type = isPassword ? "text" : "password");
-            document.getElementById('toggleVisibilityBtn').innerText = isPassword ? "Hide Plaintext Passwords" : "Show Plaintext Passwords";
+            status.innerText = '';
         };
 
-        // Listen for browser autofill events
-        [regPass, loginPass].forEach(input => {
-            input.addEventListener('input', evaluatePasswords);
-            input.addEventListener('change', evaluatePasswords);
-        });
+        document.getElementById('saveBtn').onclick = () => {
+            if (regPass.value === regConfirm.value && regPass.value !== '') {
+                localStorage.setItem('esp32_pass', regPass.value);
+                status.innerText = 'Password saved to cache!';
+                status.style.color = '#00ff00';
+            } else {
+                status.innerText = 'Passwords do not match or are empty!';
+                status.style.color = '#ff3333';
+            }
+        };
+
+        document.getElementById('loadBtn').onclick = () => {
+            const cached = localStorage.getItem('esp32_pass');
+            if (cached) {
+                loginPass.value = cached;
+                status.innerText = 'Password loaded from cache!';
+                status.style.color = '#00ff00';
+            } else {
+                status.innerText = 'No password in cache!';
+                status.style.color = '#ffaa00';
+            }
+        };
+
+        document.getElementById('verifyBtn').onclick = () => {
+            const cached = localStorage.getItem('esp32_pass');
+            if (!cached) {
+                status.innerText = 'Nothing in cache to compare!';
+                status.style.color = '#ffaa00';
+                return;
+            }
+            if (loginPass.value === cached) {
+                status.innerText = 'SUCCESS: Login password matches cache!';
+                status.style.color = '#00ff00';
+            } else {
+                status.innerText = 'FAILED: Passwords do not match!';
+                status.style.color = '#ff3333';
+            }
+        };
     </script>
 </body>
 </html>
