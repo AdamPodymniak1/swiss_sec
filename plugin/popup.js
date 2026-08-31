@@ -44,10 +44,17 @@ openBtn.onclick = () => {
     chrome.tabs.create({ url: "dashboard.html", pinned: true, active: false });
 };
 
-submitPinBtn.onclick = () => {
+const submitPin = () => {
+    if (!pinInput.value) return;
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pinInput.value });
     pinInput.value = "";
 };
+
+submitPinBtn.onclick = submitPin;
+
+pinInput.addEventListener("keyup", (event) => {
+    if (event.key === "Enter") submitPin();
+});
 
 disconnectBtn.onclick = () => {
     chrome.runtime.sendMessage({ target: "dashboard", type: "DISCONNECT" });

@@ -121,7 +121,7 @@ void updateFingerprintAsync() {
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
 
-        Terminal.println(pendingPasswordToTransmit);
+        Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
         Terminal.flush();
 
         pendingPasswordToTransmit = "";
@@ -160,7 +160,7 @@ void updateFingerprintAsync() {
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 
 
-                    Terminal.println(pendingPasswordToTransmit);
+                    Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
                     Terminal.flush();
 
                     pendingPasswordToTransmit = ""; 
