@@ -1,3 +1,31 @@
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+        id: "generate-esp32-password",
+        title: "Generate ESP32 Password & Save",
+        contexts: ["editable", "page"]
+    });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === "generate-esp32-password" && tab && tab.url) {
+        try {
+            let url = new URL(tab.url);
+            if (url.hostname) {
+                chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
+                    if (tabs.length > 0) {
+                        chrome.tabs.sendMessage(tabs[0].id, {
+                            target: "dashboard",
+                            type: "AUTO_GENERATE",
+                            hostname: url.hostname,
+                            senderTabId: tab.id
+                        });
+                    }
+                });
+            }
+        } catch(e) {}
+    }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.target === "dashboard") {
         if (sender && sender.tab) {
