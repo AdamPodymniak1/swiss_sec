@@ -3,6 +3,7 @@ let aesKey = null;
 let localKeyPair = null;
 let isConnected = false;
 let authState = "UNKNOWN";
+let pendingAutoGenerate = null;
 
 const terminal = document.getElementById('terminal');
 const connectBtn = document.getElementById('connectBtn');
@@ -74,6 +75,7 @@ async function disconnect() {
     keepReading = false;
     isConnected = false;
     authState = "UNKNOWN";
+    pendingAutoGenerate = null;
     if (reader) {
         await reader.cancel();
         reader.releaseLock();
@@ -83,6 +85,46 @@ async function disconnect() {
         port = null;
     }
     window.close();
+}
+
+function processIncomingLine(text) {
+    if (text.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
+    else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
+    else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) authState = "READY";
+    else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
+
+    if (pendingAutoGenerate) {
+        if (text.includes("[PASS] REQ:NAME")) {
+            sendSecure(pendingAutoGenerate.domain);
+        } else if (text.includes("[PASS] AUTO_GENERATE_PASSWORD?")) {
+            sendSecure("Y");
+        }
+    }
+
+    if (text.includes("[PASS] GENERATED:")) {
+        const generatedPassword = text.split("[PASS] GENERATED:")[1].trim();
+        const targetTabId = pendingAutoGenerate ? pendingAutoGenerate.tabId : null;
+        pendingAutoGenerate = null;
+
+        if (targetTabId) {
+            chrome.tabs.sendMessage(targetTabId, {
+                type: "FILL_CREDENTIALS",
+                password: generatedPassword
+            });
+        } else {
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                if (tabs.length > 0) {
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                        type: "FILL_CREDENTIALS",
+                        password: generatedPassword
+                    });
+                }
+            });
+        }
+    }
+
+    terminal.innerText += text + "\n";
+    terminal.scrollTop = terminal.scrollHeight;
 }
 
 async function readLoop() {
@@ -142,24 +184,11 @@ async function readLoop() {
                     try {
                         const decrypted = await crypto.subtle.decrypt({name: "AES-GCM", iv: iv}, aesKey, cipherWithTag);
                         const text = new TextDecoder().decode(decrypted);
-                        
-                        if (text.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
-                        else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
-                        else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) authState = "READY";
-                        else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
-                        
-                        terminal.innerText += text + "\n";
-                        terminal.scrollTop = terminal.scrollHeight;
+                        processIncomingLine(text);
                     } catch (e) {}
                 } 
                 else {
-                    if (line.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
-                    else if (line.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
-                    else if (line.includes("[AUTH] STATUS:SUCCESS") || line.includes("[SYS] STATUS:READY")) authState = "READY";
-                    else if (line.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
-
-                    terminal.innerText += line + "\n";
-                    terminal.scrollTop = terminal.scrollHeight;
+                    processIncomingLine(line);
                 }
             }
         } catch (e) { break; }
@@ -205,6 +234,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "ACTIVE_SITE") {
         terminal.innerText += `[Extension] Active site: ${message.hostname}\n`;
         terminal.scrollTop = terminal.scrollHeight;
+    } else if (message.type === "AUTO_GENERATE") {
+        if (isConnected && authState === "READY") {
+            pendingAutoGenerate = { 
+                domain: message.hostname, 
+                tabId: message.senderTabId 
+            };
+            sendSecure("create");
+        }
     } else if (message.type === "SEND") {
         sendSecure(message.payload);
     } else if (message.type === "DISCONNECT") {

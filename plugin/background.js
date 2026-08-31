@@ -1,5 +1,8 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.target === "dashboard") {
+        if (sender && sender.tab) {
+            message.senderTabId = sender.tab.id;
+        }
         chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
             if (tabs.length > 0) {
                 chrome.tabs.sendMessage(tabs[0].id, message, sendResponse);
