@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: sans-serif; margin: 10px; background: #121212; color: #e0e0e0; width: 250px; text-align: center; }
+        button { padding: 8px 15px; cursor: pointer; background: #333; color: #fff; border: 1px solid #555; width: 100%; margin-bottom: 10px; }
+        #status { margin-bottom: 15px; font-weight: bold; padding: 10px; background: #1e1e1e; border: 1px solid #444; }
+        #pinInput { width: calc(100% - 18px); padding: 8px; margin-bottom: 10px; background: #222; color: #fff; border: 1px solid #444; text-align: center; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+    <h2>Vault Status</h2>
+    <div id="status">Checking connection...</div>
+    <div id="authSection" style="display: none;">
+        <input type="password" id="pinInput" placeholder="Enter PIN">
+        <button id="submitPinBtn">Submit</button>
+    </div>
+    <button id="disconnectBtn" style="display: none; background: #8b0000;">Disconnect Hardware</button>
+    <button id="openDashboardBtn">Open Hardware Dashboard</button>
+    <script src="popup.js"></script>
+</body>
+</html>

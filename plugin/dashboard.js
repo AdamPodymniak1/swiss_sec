@@ -1,45 +1,19 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        #terminal { 
-            white-space: pre-wrap; 
-            height: 400px; 
-            border: 1px solid #ccc; 
-            overflow-y: auto;
-            padding: 10px;
-            background: #1e1e1e;
-            color: #00ff00;
-            font-family: monospace;
-            margin-bottom: 10px;
-        }
-        input { width: 300px; padding: 5px; }
-        button { padding: 5px 15px; }
-    </style>
-</head>
-<body>
-    <button id="connectBtn">Connect & Secure</button>
-    <div id="terminal"></div>
-    <input type="text" id="input" placeholder="Type command here..." disabled>
-    <button id="sendBtn" disabled>Send</button>
-
-    <script>
 let port, reader, keepReading = false;
-let aesKey = null; 
+let aesKey = null;
 let localKeyPair = null;
+let isConnected = false;
+let authState = "UNKNOWN";
 
 const terminal = document.getElementById('terminal');
 const connectBtn = document.getElementById('connectBtn');
 const inputField = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 
-// Hardened Hex <-> Buffer Helpers
 function bufferToHex(buffer) {
     return Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function hexToBuffer(hex) {
-    // Strip out spaces, colons, newlines or carriage returns that firmware might inject
     const cleanHex = hex.replace(/[^0-9a-fA-F]/g, '');
     const bytes = new Uint8Array(Math.ceil(cleanHex.length / 2));
     for (let i = 0; i < bytes.length; i++) {
@@ -48,6 +22,13 @@ function hexToBuffer(hex) {
     return bytes;
 }
 
+window.addEventListener('DOMContentLoaded', async () => {
+    const ports = await navigator.serial.getPorts();
+    if (ports.length > 0) {
+        await connect();
+    }
+});
+
 connectBtn.onclick = async () => {
     if (port && port.readable) await disconnect();
     else await connect();
@@ -55,28 +36,27 @@ connectBtn.onclick = async () => {
 
 async function connect() {
     try {
-        port = await navigator.serial.requestPort();
+        const ports = await navigator.serial.getPorts();
+        if (ports.length > 0) {
+            port = ports[0];
+        } else {
+            port = await navigator.serial.requestPort();
+        }
+        
         await port.open({ baudRate: 115200 });
         
         connectBtn.innerText = "Disconnect";
         inputField.disabled = false;
         sendBtn.disabled = false;
         keepReading = true;
-        aesKey = null; 
+        isConnected = true;
+        aesKey = null;
 
         readLoop();
 
-        // 1. Generate P-256 (SECP256R1) Keypair to match mbedTLS config
-        localKeyPair = await crypto.subtle.generateKey(
-            { name: 'ECDH', namedCurve: 'P-256' }, 
-            true, 
-            ['deriveBits']
-        );
-        
-        // Exports as raw uncompressed ANSI X9.62 format (65 bytes starting with 0x04)
+        localKeyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
         const pubKeyRaw = await crypto.subtle.exportKey("raw", localKeyPair.publicKey);
         
-        // 2. Send Public Key to initialize Diffie-Hellman
         terminal.innerText += "[System] Initiating Handshake...\n";
         await sendRaw(`DH_INIT:${bufferToHex(pubKeyRaw)}\n`);
     } catch (err) {
@@ -92,6 +72,8 @@ async function disconnect() {
         } catch (err) {}
     }
     keepReading = false;
+    isConnected = false;
+    authState = "UNKNOWN";
     if (reader) {
         await reader.cancel();
         reader.releaseLock();
@@ -100,10 +82,7 @@ async function disconnect() {
         await port.close();
         port = null;
     }
-    connectBtn.innerText = "Connect & Secure";
-    inputField.disabled = true;
-    sendBtn.disabled = true;
-    terminal.innerText += "\n--- Disconnected ---\n";
+    window.close();
 }
 
 async function readLoop() {
@@ -117,20 +96,17 @@ async function readLoop() {
             
             rxBuffer += new TextDecoder().decode(value);
             let lines = rxBuffer.split('\n');
-            rxBuffer = lines.pop(); // Keep incomplete chunk in buffer
+            rxBuffer = lines.pop();
 
             for (let line of lines) {
                 line = line.trim();
                 if (!line) continue;
 
-                // FIX: Look for the token anywhere in the line to bypass bootloader garbage
                 if (line.includes("DH_ACK:")) {
                     try {
-                        // Split at the token and grab everything after it
                         const rawHexData = line.split("DH_ACK:")[1].trim();
                         let espPubKeyRaw = hexToBuffer(rawHexData);
                         
-                        // Auto-prepend 0x04 uncompressed prefix if microcontroller sent 64 bytes
                         if (espPubKeyRaw.length === 64) {
                             const normalizedKey = new Uint8Array(65);
                             normalizedKey[0] = 0x04;
@@ -138,32 +114,23 @@ async function readLoop() {
                             espPubKeyRaw = normalizedKey;
                         }
                         
-                        // Import ESP32 public key point
                         const espPubKey = await crypto.subtle.importKey(
-                            "raw", 
-                            espPubKeyRaw, 
-                            { name: 'ECDH', namedCurve: 'P-256' }, 
-                            true, 
-                            []
+                            "raw", espPubKeyRaw, { name: 'ECDH', namedCurve: 'P-256' }, true, []
                         );
                         
-                        // Compute Shared Secret and generate symmetrical AES-GCM Key
                         const sharedSecret = await crypto.subtle.deriveBits(
-                            { name: 'ECDH', public: espPubKey }, 
-                            localKeyPair.privateKey, 
-                            256
+                            { name: 'ECDH', public: espPubKey }, localKeyPair.privateKey, 256
                         );
                         
                         const hash = await crypto.subtle.digest("SHA-256", sharedSecret);
                         aesKey = await crypto.subtle.importKey("raw", hash, {name: "AES-GCM"}, false, ["encrypt", "decrypt"]);
                         
-                        terminal.innerText += "[System] Secure AES-256-GCM Tunnel Established.\n";
+                        terminal.innerText += "[System] Secure Tunnel Established.\n";
                         await sendSecure("RESTART_SYSTEM");
                     } catch (cryptoErr) {
                         terminal.innerText += `[System Error] Key exchange calculation broken: ${cryptoErr.message}\n`;
                     }
                 } 
-                // FIX: Protect encryption packets from potential mid-stream glitches too
                 else if (line.includes("ENC:")) {
                     if (!aesKey) continue;
                     
@@ -174,14 +141,23 @@ async function readLoop() {
                     
                     try {
                         const decrypted = await crypto.subtle.decrypt({name: "AES-GCM", iv: iv}, aesKey, cipherWithTag);
-                        terminal.innerText += new TextDecoder().decode(decrypted);
+                        const text = new TextDecoder().decode(decrypted);
+                        
+                        if (text.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
+                        else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
+                        else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) authState = "READY";
+                        else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
+                        
+                        terminal.innerText += text + "\n";
                         terminal.scrollTop = terminal.scrollHeight;
-                    } catch (e) {
-                        console.error("Decryption dropped malformed packet.", e);
-                    }
+                    } catch (e) {}
                 } 
                 else {
-                    // Plain text bypass for hardware bootup maps, panics, and raw status codes
+                    if (line.includes("[AUTH] STATUS:PIN_REQ")) authState = "PIN_REQ";
+                    else if (line.includes("[AUTH] STATUS:NEW_PIN_REQ")) authState = "NEW_PIN_REQ";
+                    else if (line.includes("[AUTH] STATUS:SUCCESS") || line.includes("[SYS] STATUS:READY")) authState = "READY";
+                    else if (line.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) authState = "NEW_PIN_REQ";
+
                     terminal.innerText += line + "\n";
                     terminal.scrollTop = terminal.scrollHeight;
                 }
@@ -204,11 +180,8 @@ async function sendSecure(text) {
     }
     const iv = crypto.getRandomValues(new Uint8Array(12));
     
-    // WebCrypto automatically appends the 16-byte authentication tag to ciphertext
     const cipherBuffer = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: iv }, 
-        aesKey, 
-        new TextEncoder().encode(text)
+        { name: "AES-GCM", iv: iv }, aesKey, new TextEncoder().encode(text)
     );
     
     const payload = `ENC:${bufferToHex(iv)}:${bufferToHex(cipherBuffer)}\n`;
@@ -217,17 +190,25 @@ async function sendSecure(text) {
 
 const handleSendAction = async () => {
     if (inputField.value.trim() === "") return;
-    
     await sendSecure(inputField.value.trim()); 
     inputField.value = "";
 };
 
 document.getElementById('sendBtn').onclick = handleSendAction;
 inputField.addEventListener("keyup", async (event) => {
-    if (event.key === "Enter") {
-        await handleSendAction();
-    }
+    if (event.key === "Enter") await handleSendAction();
 });
-    </script>
-</body>
-</html>
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "PING") {
+        sendResponse({ connected: isConnected, authState: authState });
+    } else if (message.type === "ACTIVE_SITE") {
+        terminal.innerText += `[Extension] Active site: ${message.hostname}\n`;
+        terminal.scrollTop = terminal.scrollHeight;
+    } else if (message.type === "SEND") {
+        sendSecure(message.payload);
+    } else if (message.type === "DISCONNECT") {
+        disconnect();
+    }
+    return true;
+});
