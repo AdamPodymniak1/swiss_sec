@@ -260,7 +260,7 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (text === "[PASS] OUT:DELETED") {
                 showMsg("Password deleted!", "lime");
                 document.getElementById('btnListPass').click();
-                //chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
+                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
             } else if (text === "[FIDO2] OUT:DELETED") {
                 showMsg("FIDO Key deleted!", "lime");
                 document.getElementById('btnListFido').click();
