@@ -6,6 +6,11 @@ let authState = "UNKNOWN";
 let pendingAutoGenerate = null;
 let pendingGetPassword = null;
 
+// Track interactive multi-step CLI operations
+let pendingGetFidoDomain = null;
+let pendingDeletePassName = null;
+let pendingDeleteFidoDomain = null;
+
 const terminal = document.getElementById('terminal');
 const connectBtn = document.getElementById('connectBtn');
 const inputField = document.getElementById('input');
@@ -89,6 +94,10 @@ async function disconnect() {
     setAuthState("UNKNOWN");
     pendingAutoGenerate = null;
     pendingGetPassword = null;
+    pendingGetFidoDomain = null;
+    pendingDeletePassName = null;
+    pendingDeleteFidoDomain = null;
+
     if (reader) {
         await reader.cancel();
         reader.releaseLock();
@@ -107,6 +116,7 @@ function processIncomingLine(text) {
     else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
     else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
 
+    // Handling password autofill workflows
     if (pendingAutoGenerate) {
         if (text.includes("[PASS] REQ:NAME")) {
             sendSecure(pendingAutoGenerate.domain);
@@ -122,6 +132,39 @@ function processIncomingLine(text) {
             terminal.innerText += `[System] No password found\n`;
             pendingGetPassword = null;
             setAuthState("READY");
+        }
+    }
+
+    // --- Interactive CLI Step Parsers ---
+    if (text.includes("[FIDO2] REQ:WEBSITE_DOMAIN")) {
+        if (pendingGetFidoDomain) {
+            sendSecure(pendingGetFidoDomain);
+            pendingGetFidoDomain = null;
+        }
+    }
+
+    // --- Deletion Confirmation Workflow Handler ---
+    if (text.includes("[PASS] OUT:DELETED")) {
+        const deletedIdentifier = pendingDeletePassName || pendingDeleteFidoDomain || "item";
+        const category = pendingDeletePassName ? "pass" : "fido";
+
+        chrome.runtime.sendMessage({
+            target: "popup",
+            type: "DELETE_CONFIRMED",
+            category: category,
+            identifier: deletedIdentifier
+        }).catch(() => {});
+
+        pendingDeletePassName = null;
+        pendingDeleteFidoDomain = null;
+    } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
+        if (pendingDeletePassName || pendingDeleteFidoDomain) {
+            chrome.runtime.sendMessage({
+                target: "popup",
+                type: "DELETE_FAILED"
+            }).catch(() => {});
+            pendingDeletePassName = null;
+            pendingDeleteFidoDomain = null;
         }
     }
 
@@ -164,6 +207,13 @@ function processIncomingLine(text) {
 
     terminal.innerText += safeText + "\n";
     terminal.scrollTop = terminal.scrollHeight;
+
+    // Relay output to Popup Dashboard Console
+    chrome.runtime.sendMessage({
+        target: "popup",
+        type: "SERIAL_OUTPUT",
+        text: safeText
+    }).catch(() => {});
 }
 
 async function readLoop() {
@@ -271,8 +321,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "PING") {
         sendResponse({ connected: isConnected, authState: authState });
     } else if (message.type === "ACTIVE_SITE") {
-        terminal.innerText += `[Extension] Active site\n`;
-        terminal.scrollTop = terminal.scrollHeight;
         sendResponse({ status: "ok" });
     } else if (message.type === "AUTO_GENERATE") {
         if (isConnected && authState === "READY") {
@@ -292,6 +340,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendSecure("get");
         }
         sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_INFO") {
+        sendSecure("info");
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_LIST_PASS") {
+        sendSecure("list");
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_LIST_FIDO") {
+        sendSecure("list_fido");
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_GET_FIDO") {
+        pendingGetFidoDomain = message.domain;
+        sendSecure("get_fido");
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_DELETE_PASS") {
+        pendingDeletePassName = message.name;
+        terminal.innerText += "[System] Deleting password for " + message.name + "\n";
+        
+        (async () => {
+            await sendSecure("delete");
+            await sendSecure(pendingDeletePassName);
+            sendResponse({ status: "ok" });
+        })();
+        return true; 
+        
+    } else if (message.type === "CMD_DELETE_FIDO") {
+        pendingDeleteFidoDomain = message.domain;
+        terminal.innerText += "[System] Deleting FIDO key for " + message.domain + "\n";
+        
+        (async () => {
+            await sendSecure("delete_fido");
+            await sendSecure(pendingDeleteFidoDomain);
+            sendResponse({ status: "ok" });
+        })();
+        return true; 
     } else if (message.type === "SEND") {
         sendSecure(message.payload);
         sendResponse({ status: "ok" });

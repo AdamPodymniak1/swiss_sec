@@ -3,21 +3,106 @@
 <head>
     <meta charset="utf-8">
     <style>
-        body { font-family: sans-serif; margin: 10px; background: #121212; color: #e0e0e0; width: 250px; text-align: center; }
-        button { padding: 8px 15px; cursor: pointer; background: #333; color: #fff; border: 1px solid #555; width: 100%; margin-bottom: 10px; }
-        #status { margin-bottom: 15px; font-weight: bold; padding: 10px; background: #1e1e1e; border: 1px solid #444; }
-        #pinInput { width: calc(100% - 18px); padding: 8px; margin-bottom: 10px; background: #222; color: #fff; border: 1px solid #444; text-align: center; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 10px; background: #121212; color: #e0e0e0; width: 340px; text-align: center; }
+        
+        .tab-bar { display: none; border-bottom: 1px solid #333; margin-bottom: 12px; }
+        .tab-btn { flex: 1; padding: 8px; background: #1a1a1a; color: #888; border: none; cursor: pointer; border-bottom: 2px solid transparent; font-weight: bold; }
+        .tab-btn.active { color: #fff; border-bottom: 2px solid #00ffff; background: #222; }
+        
+        .tab-content { display: none; text-align: left; }
+        .tab-content.active { display: block; }
+
+        button { padding: 8px 12px; cursor: pointer; background: #2a2a2a; color: #fff; border: 1px solid #444; width: 100%; margin-bottom: 8px; border-radius: 4px; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #3a3a3a; }
+        
+        #status { margin-bottom: 12px; font-weight: bold; padding: 10px; background: #1a1a1a; border: 1px solid #333; text-align: center; border-radius: 4px; }
+        input[type="text"], input[type="password"] { width: calc(100% - 16px); padding: 7px; margin-bottom: 8px; background: #222; color: #fff; border: 1px solid #444; box-sizing: border-box; border-radius: 4px; }
+        
+        .action-group { background: #181818; padding: 10px; border: 1px solid #2a2a2a; margin-bottom: 10px; border-radius: 6px; }
+        .action-title { font-size: 11px; font-weight: bold; color: #888; text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px solid #2a2a2a; padding-bottom: 4px; display: flex; justify-content: space-between; align-items: center;}
+        
+        /* Add Password Form */
+        .add-row { display: flex; gap: 4px; margin-bottom: 8px; }
+        .add-row input { margin-bottom: 0; width: 100%; font-size: 11px; }
+        .add-row button { margin-bottom: 0; width: 60px; background: #006666; border-color: #008888; padding: 6px; font-size: 11px; }
+        .add-row button:hover { background: #008888; }
+
+        /* Stats visual */
+        .progress-bg { background: #262626; border-radius: 4px; width: 100%; height: 10px; margin-bottom: 6px; overflow: hidden; }
+        .progress-fill { background: #00ffff; height: 100%; width: 0%; transition: width 0.3s ease; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 11px; color: #bbb; }
+        
+        /* Lists & Favicons */
+        .data-list { list-style: none; padding: 0; margin: 0; max-height: 150px; overflow-y: auto; font-size: 12px; background: #111; border: 1px solid #222; border-radius: 4px; }
+        .data-list li { padding: 6px 8px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
+        .data-list li:last-child { border-bottom: none; }
+        
+        .item-label { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+        .item-favicon { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; background: #222; }
+
+        .icon-btn { background: transparent; border: none; padding: 2px 4px; font-size: 13px; width: auto; margin: 0; color: #888; cursor: pointer; transition: transform 0.1s; }
+        .icon-btn:hover { background: transparent; transform: scale(1.15); }
+        .btn-del:hover { color: #ff4444; }
+
+        .empty-state { padding: 10px; text-align: center; color: #666; font-style: italic; }
+        .info-status { font-size: 11px; color: #00ffff; margin-top: 4px; text-align: center; height: 14px; }
     </style>
 </head>
 <body>
-    <h2>Vault Status</h2>
-    <div id="status">Checking connection...</div>
-    <div id="authSection" style="display: none;">
-        <input type="password" id="pinInput" placeholder="Enter PIN">
-        <button id="submitPinBtn">Submit</button>
+    <div class="tab-bar" id="navTabs">
+        <button class="tab-btn active" data-tab="tab-status">Status</button>
+        <button class="tab-btn" data-tab="tab-dashboard">Vault</button>
     </div>
-    <button id="disconnectBtn" style="display: none; background: #8b0000;">Disconnect Hardware</button>
-    <button id="openDashboardBtn">Open Hardware Dashboard</button>
+
+    <!-- TAB 1: Status & Unlock -->
+    <div id="tab-status" class="tab-content active">
+        <div id="status">Checking connection...</div>
+        <div id="authSection" style="display: none;">
+            <input type="password" id="pinInput" placeholder="Enter PIN">
+            <button id="submitPinBtn">Submit PIN</button>
+        </div>
+        <button id="disconnectBtn" style="display: none; background: #8b0000; border-color: #aa0000;">Lock & Close Vault</button>
+        <button id="openDashboardBtn">Open Hardware Terminal</button>
+    </div>
+
+    <!-- TAB 2: Vault Dashboard -->
+    <div id="tab-dashboard" class="tab-content">
+        
+        <!-- System Storage Stats -->
+        <div class="action-group">
+            <div class="action-title"><span>Storage Usage</span></div>
+            <div id="statsVisual"><div class="empty-state">Loading stats...</div></div>
+        </div>
+
+        <!-- Password Vault -->
+        <div class="action-group">
+            <div class="action-title">
+                <span>Passwords</span>
+                <button id="btnListPass" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
+            </div>
+            
+            <!-- Create New Password Input -->
+            <div class="add-row">
+                <input type="text" id="newPassName" placeholder="Site / Name (e.g. github.com)">
+                <input type="password" id="newPassValue" placeholder="Blank for auto-gen">
+                <button id="btnCreatePass">Add</button>
+            </div>
+            
+            <ul id="passVisual" class="data-list"></ul>
+        </div>
+
+        <!-- FIDO2 Authenticator Keys -->
+        <div class="action-group">
+            <div class="action-title">
+                <span>FIDO2 Passkeys</span>
+                <button id="btnListFido" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
+            </div>
+            <ul id="fidoVisual" class="data-list"></ul>
+        </div>
+
+        <div id="vaultMessage" class="info-status"></div>
+    </div>
+
     <script src="popup.js"></script>
 </body>
 </html>

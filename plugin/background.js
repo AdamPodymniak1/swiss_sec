@@ -59,21 +59,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.target === "dashboard") {
         if (sender && sender.tab) {
             message.senderTabId = sender.tab.id;
+            chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
+                if (tabs.length > 0) {
+                    chrome.tabs.sendMessage(tabs[0].id, message, (response) => {
+                        if (chrome.runtime.lastError) {
+                            sendResponse(null);
+                        } else {
+                            sendResponse(response);
+                        }
+                    });
+                } else {
+                    sendResponse(null);
+                }
+            });
+            return true; 
         }
-        chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
-            if (tabs.length > 0) {
-                chrome.tabs.sendMessage(tabs[0].id, message, (response) => {
-                    if (chrome.runtime.lastError) {
-                        sendResponse(null);
-                    } else {
-                        sendResponse(response);
-                    }
-                });
-            } else {
-                sendResponse(null);
-            }
-        });
-        return true; 
     } else if (message.target === "content" && message.recipientTabId) {
         chrome.tabs.sendMessage(message.recipientTabId, message);
     }
