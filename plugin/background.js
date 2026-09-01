@@ -1,4 +1,4 @@
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
     chrome.contextMenus.create({
         id: "get-esp32-password",
         title: "Autofill Saved Password",
@@ -9,6 +9,16 @@ chrome.runtime.onInstalled.addListener(() => {
         title: "Generate ESP32 Password & Save",
         contexts: ["editable", "page"]
     });
+
+    try {
+        const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+        for (const tab of tabs) {
+            chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ["content.js"]
+            }).catch(() => {});
+        }
+    } catch(e) {}
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {

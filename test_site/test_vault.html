@@ -45,12 +45,12 @@
             <h2>Registration Form</h2>
             <form onsubmit="event.preventDefault();">
                 <label>Email</label>
-                <input type="text" value="user@example.com" autocomplete="off">
+                <input type="text" value="user@example.com" autocomplete="off" disabled>
                 <label>New Password</label>
-                <input type="password" id="regPass">
+                <input type="password" id="regPass" disabled>
                 <label>Confirm Password</label>
-                <input type="password" id="regConfirm">
-                <button id="saveBtn">Save to Cache</button>
+                <input type="password" id="regConfirm" disabled>
+                <button id="saveBtn" disabled>Save to Cache</button>
             </form>
         </div>
 
@@ -67,15 +67,24 @@
         const status = document.getElementById('status');
         let isLogin = true;
 
+        function toggleInputs(section, isDisabled) {
+            const inputs = section.querySelectorAll('input, button');
+            inputs.forEach(input => input.disabled = isDisabled);
+        }
+
         switchBtn.onclick = () => {
             isLogin = !isLogin;
             if (isLogin) {
                 loginSection.classList.remove('hidden');
                 registerSection.classList.add('hidden');
+                toggleInputs(loginSection, false);
+                toggleInputs(registerSection, true);
                 switchBtn.innerText = 'Switch to Registration';
             } else {
                 loginSection.classList.add('hidden');
                 registerSection.classList.remove('hidden');
+                toggleInputs(loginSection, true);
+                toggleInputs(registerSection, false);
                 switchBtn.innerText = 'Switch to Login';
             }
             status.innerText = '';
