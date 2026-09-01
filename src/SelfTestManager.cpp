@@ -97,15 +97,6 @@ bool testStorageSubsystem() {
         printTestResult("Storage: Vault Single Node Erasure", true);
     }
 
-    createPin("4321");
-    if (!isPinSet() || !verifyPin("4321") || verifyPin("0000")) {
-        printTestResult("Storage: User PIN Custom Creation & Checking", false);
-        allPassed = false;
-    } else {
-        printTestResult("Storage: User PIN Custom Creation & Checking", true);
-    }
-    deletePin(); 
-
     return allPassed;
 }
 

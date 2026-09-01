@@ -46,12 +46,23 @@
 
         .empty-state { padding: 10px; text-align: center; color: #666; font-style: italic; }
         .info-status { font-size: 11px; color: #00ffff; margin-top: 4px; text-align: center; height: 14px; }
+
+        /* Diagnostic & Settings Visuals */
+        .danger-btn { background: #550000; border-color: #880000; color: #ffcccc; }
+        .danger-btn:hover { background: #770000; }
+        .diag-list { list-style: none; padding: 0; margin: 0; font-size: 11px; max-height: 120px; overflow-y: auto; background: #0a0a0a; border-radius: 4px; }
+        .diag-list li { padding: 4px 8px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; gap: 6px; }
+        .diag-list li:last-child { border-bottom: none; }
+        .test-pass { color: #00ff00; }
+        .test-fail { color: #ff3333; }
+        select { width: 100%; padding: 7px; margin-bottom: 8px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; font-size: 12px; }
     </style>
 </head>
 <body>
     <div class="tab-bar" id="navTabs">
         <button class="tab-btn active" data-tab="tab-status">Status</button>
         <button class="tab-btn" data-tab="tab-dashboard">Vault</button>
+        <button class="tab-btn" data-tab="tab-settings">Settings</button>
     </div>
 
     <!-- TAB 1: Status & Unlock -->
@@ -101,6 +112,45 @@
         </div>
 
         <div id="vaultMessage" class="info-status"></div>
+    </div>
+
+    <!-- TAB 3: Settings & Diagnostics -->
+    <div id="tab-settings" class="tab-content">
+        
+        <!-- FIDO2 Algorithm -->
+        <div class="action-group">
+            <div class="action-title"><span>Default Crypto Algorithm</span></div>
+            <div class="add-row">
+                <select id="cryptoSelect">
+                    <option value="-7">ES256 (P-256)</option>
+                    <option value="-8">EdDSA (Ed25519)</option>
+                    <option value="-257">RS256 (RSA)</option>
+                    <option value="-48">ML-DSA-44 (PQC)</option>
+                    <option value="-49">ML-DSA-65 (PQC)</option>
+                    <option value="-50">ML-DSA-87 (PQC)</option>
+                </select>
+                <button id="btnSetCrypto">Apply</button>
+            </div>
+        </div>
+
+        <!-- Hardware Diagnostics -->
+        <div class="action-group">
+            <div class="action-title">
+                <span>System Diagnostics</span>
+                <button id="btnRunDiag" class="icon-btn" style="font-size: 11px;" title="Run Tests">▶️</button>
+            </div>
+            <ul id="diagVisual" class="diag-list">
+                <div class="empty-state">Ready to test.</div>
+            </ul>
+        </div>
+
+        <!-- Hardware Administration -->
+        <div class="action-group">
+            <div class="action-title"><span>Administration</span></div>
+            <button id="btnRegFinger">Enroll New Fingerprint</button>
+            <button id="btnWipePass" class="danger-btn">Purge Password Vault</button>
+            <button id="btnFactoryReset" class="danger-btn">Factory Reset (Wipe All)</button>
+        </div>
     </div>
 
     <script src="popup.js"></script>

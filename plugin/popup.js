@@ -208,6 +208,36 @@ document.getElementById('btnListFido').onclick = () => {
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "list_fido" });
 };
 
+// --- Settings & Diagnostics Actions ---
+document.getElementById('btnRunDiag').onclick = () => {
+    document.getElementById('diagVisual').innerHTML = '<div class="empty-state">Testing subsystems...</div>';
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "diagnostics" });
+};
+
+document.getElementById('btnSetCrypto').onclick = () => {
+    pendingTask = { type: 'SET_CRYPTO', val: document.getElementById('cryptoSelect').value };
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "set_crypto" });
+};
+
+document.getElementById('btnRegFinger').onclick = () => {
+    showMsg("Place finger on sensor...", "orange");
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "register_finger" });
+};
+
+document.getElementById('btnWipePass').onclick = () => {
+    if (confirm("WARNING: This will permanently delete ALL passwords and passkeys. Continue?")) {
+        showMsg("Purging vault...", "red");
+        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "delete_pass" });
+    }
+};
+
+document.getElementById('btnFactoryReset').onclick = () => {
+    if (confirm("CRITICAL: Factory reset will wipe the PIN, all vault data, and fingerprints. Continue?")) {
+        showMsg("Sending reset command...", "red");
+        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "delete_pin" });
+    }
+};
+
 // --- Serial Stream Event Listener & Dynamic CLI State Machine ---
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
@@ -229,9 +259,46 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (text.startsWith("[FIDO2] ITEM:") && isFetchingFido) {
                 const item = text.substring(13).trim();
                 if (item) fidoItemsSet.add(item);
+            // Existing parser handlers above...
             } else if (text.startsWith("[FIDO2] OUT:") && isFetchingFido) {
                 isFetchingFido = false;
                 renderList('fidoVisual', Array.from(fidoItemsSet), 'fido');
+            }
+
+            // --- Diagnostics Parser ---
+            if (text.startsWith("[TEST:PASS] -> ")) {
+                const diagName = text.replace("[TEST:PASS] -> ", "");
+                const ul = document.getElementById('diagVisual');
+                if (ul.innerHTML.includes("Testing subsystems") || ul.innerHTML.includes("Ready")) ul.innerHTML = "";
+                ul.innerHTML += `<li><span class="test-pass">✔️</span> ${diagName}</li>`;
+            } else if (text.startsWith("[TEST:FAIL] *CRITICAL* -> ")) {
+                const diagName = text.replace("[TEST:FAIL] *CRITICAL* -> ", "");
+                const ul = document.getElementById('diagVisual');
+                if (ul.innerHTML.includes("Testing subsystems") || ul.innerHTML.includes("Ready")) ul.innerHTML = "";
+                ul.innerHTML += `<li><span class="test-fail">❌</span> ${diagName}</li>`;
+            }
+
+            // --- Async State Machines ---
+            if (pendingTask && pendingTask.type === 'SET_CRYPTO' && text.includes("[SYS] REQ:ALG_ID")) {
+                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.val });
+            }
+
+            // --- Status Notifications ---
+            if (text.includes("[SYS] DEFAULT_CRYPTO_ALG_SET:")) {
+                showMsg("Algorithm updated!", "lime");
+                pendingTask = null;
+            } else if (text.includes("[SYS] STATUS:FINGERPRINT_REGISTERED")) {
+                showMsg("Fingerprint Enrolled!", "lime");
+            } else if (text.includes("[SYS] VAULT PURGE SUCCESSFUL")) {
+                showMsg("Vault Purged.", "lime");
+                document.getElementById('btnListPass').click();
+                document.getElementById('btnListFido').click();
+            } else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) {
+                // Clear Chrome caches and force lock the UI
+                chrome.storage.local.clear(() => {
+                    showMsg("Factory Reset Complete", "red");
+                    setTimeout(() => document.getElementById('disconnectBtn').click(), 1000);
+                });
             }
 
             if (pendingTask && pendingTask.type === 'CREATE_PASS') {

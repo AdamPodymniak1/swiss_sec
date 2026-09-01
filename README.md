@@ -7,7 +7,7 @@ SwissSec is an advanced, hardware-based cybersecurity multitool built on the ESP
 
 ### Advanced Cryptography & FIDO2
 *   **FIDO2 & WebAuthn Compliant:** Supports MakeCredential and GetAssertion flows, Resident Passkeys, and the CTAP2 HID protocol.
-*   **Post-Quantum Ready:** Implements ML-DSA (44, 65, 87) alongside standard algorithms (ECDSA P-256, Ed25519, RSA-2048).
+*   **Post-Quantum Ready:** Implements ML-DSA (44, 65, 87) alongside standard algorithms (ECDSA P-256, ES256, RS256).
 *   **FIDO2 Extensions:** Supports the `hmac-secret` extension for offline login environments like Windows Hello.
 *   **Backwards Compatibility:** Includes support for legacy U2F protocols.
 *   **Dynamic Custom AAGUID:** Hardware-derived Authenticator Attestation GUID.
