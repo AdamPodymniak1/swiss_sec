@@ -238,6 +238,34 @@ document.getElementById('btnFactoryReset').onclick = () => {
     }
 };
 
+// --- TOTP Actions ---
+document.getElementById('btnGetTotp').onclick = () => {
+    const name = document.getElementById('totpGetName').value.trim();
+    if (!name) return showMsg("Account name required!", "orange");
+    
+    document.getElementById('totpDisplay').innerText = "------";
+    document.getElementById('totpDisplay').style.color = "#444"; // Dim while fetching
+    pendingTask = { type: 'GET_TOTP', name: name };
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_get" });
+};
+
+document.getElementById('btnAddTotp').onclick = () => {
+    const name = document.getElementById('totpAddName').value.trim();
+    // Strip spaces from Base32 secrets (common when copying from setup screens)
+    const secret = document.getElementById('totpAddSecret').value.trim().replace(/\s+/g, '');
+    
+    if (!name || !secret) return showMsg("Name and Secret required!", "orange");
+    if (pendingTask) return showMsg("Hardware busy...", "orange");
+    
+    pendingTask = { type: 'ADD_TOTP', step: 'WAIT_NAME', name: name, secret: secret };
+    showMsg(`Adding TOTP for '${name}'...`);
+    
+    document.getElementById('totpAddName').value = "";
+    document.getElementById('totpAddSecret').value = "";
+    
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_add" });
+};
+
 // --- Serial Stream Event Listener & Dynamic CLI State Machine ---
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
@@ -334,6 +362,38 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (text.startsWith("[ERR]")) {
                 showMsg(`Hardware Error: ${text.replace("[ERR] CODE:", "")}`, "orange");
                 pendingTask = null;
+            }
+
+            // --- TOTP Parsers ---
+            if (text.startsWith("[TOTP] CODE:")) {
+                const code = text.replace("[TOTP] CODE:", "").trim();
+                const display = document.getElementById('totpDisplay');
+                display.innerText = code;
+                display.style.color = "#00ffff"; // Restore bright color
+                showMsg("Code Generated!", "lime");
+                pendingTask = null;
+            }
+
+            // TOTP Code Generation Flow
+            if (pendingTask && pendingTask.type === 'GET_TOTP' && text.includes("[TOTP] REQ:NAME")) {
+                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.name });
+            }
+
+            // TOTP Registration Flow
+            if (pendingTask && pendingTask.type === 'ADD_TOTP') {
+                if (text.includes("[TOTP] REQ:NAME") && pendingTask.step === 'WAIT_NAME') {
+                    pendingTask.step = 'WAIT_SECRET';
+                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.name });
+                } else if (text.includes("[TOTP] REQ:BASE32_SECRET") && pendingTask.step === 'WAIT_SECRET') {
+                    pendingTask.step = 'DONE';
+                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.secret });
+                    
+                    // The ESP32 returns to STATE_READY silently after saving the secret
+                    setTimeout(() => {
+                        showMsg("TOTP Secret Saved!", "lime");
+                        pendingTask = null;
+                    }, 400); 
+                }
             }
         });
     }

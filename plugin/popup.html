@@ -63,6 +63,7 @@
         <button class="tab-btn active" data-tab="tab-status">Status</button>
         <button class="tab-btn" data-tab="tab-dashboard">Vault</button>
         <button class="tab-btn" data-tab="tab-settings">Settings</button>
+        <button class="tab-btn" data-tab="tab-totp">TOTP</button>
     </div>
 
     <!-- TAB 1: Status & Unlock -->
@@ -150,6 +151,32 @@
             <button id="btnRegFinger">Enroll New Fingerprint</button>
             <button id="btnWipePass" class="danger-btn">Purge Password Vault</button>
             <button id="btnFactoryReset" class="danger-btn">Factory Reset (Wipe All)</button>
+        </div>
+    </div>
+
+    <!-- TAB 4: TOTP Authenticator -->
+    <div id="tab-totp" class="tab-content">
+        
+        <!-- Get TOTP Code -->
+        <div class="action-group">
+            <div class="action-title"><span>Generate Code</span></div>
+            <div class="add-row">
+                <input type="text" id="totpGetName" placeholder="Account Name (e.g. github.com)">
+                <button id="btnGetTotp">Get Code</button>
+            </div>
+            <div id="totpDisplay" style="font-size: 28px; font-family: monospace; text-align: center; letter-spacing: 8px; color: #00ffff; margin-top: 15px; margin-bottom: 5px; font-weight: bold; height: 35px;">
+                ------
+            </div>
+        </div>
+
+        <!-- Add TOTP Secret -->
+        <div class="action-group">
+            <div class="action-title"><span>Add New Authenticator</span></div>
+            <div class="add-row">
+                <input type="text" id="totpAddName" placeholder="Account Name">
+                <input type="password" id="totpAddSecret" placeholder="Base32 Secret">
+                <button id="btnAddTotp">Save</button>
+            </div>
         </div>
     </div>
 
