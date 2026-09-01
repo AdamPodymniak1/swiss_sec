@@ -113,14 +113,14 @@ function getFaviconUrl(domain) {
     return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(clean)}&sz=32`;
 }
 
-function renderStats(total, used, free, usage, count) {
+function renderStats(total, used, free, usage, passCount, passkeyCount = 0) {
     document.getElementById('statsVisual').innerHTML = `
         <div class="progress-bg"><div class="progress-fill" style="width: ${usage}%;"></div></div>
         <div class="stats-grid">
             <div><strong>Used:</strong> ${usage}% (${Math.round(used/1024)}KB)</div>
             <div><strong>Free:</strong> ${Math.round(free/1024)}KB</div>
-            <div><strong>Items:</strong> ${count}</div>
-            <div><strong>Cap:</strong> ${Math.round(total/1024)}KB</div>
+            <div><strong>Passwords:</strong> ${passCount}</div>
+            <div><strong>Passkeys:</strong> ${passkeyCount}</div>
         </div>
     `;
 }
@@ -277,7 +277,11 @@ chrome.runtime.onMessage.addListener((message) => {
 
             if (text.startsWith("[STORAGE] STATS:")) {
                 const p = text.split(":")[1].split(",");
-                if (p.length >= 5) renderStats(p[0], p[1], p[2], p[3], p[4]);
+                if (p.length >= 8) {
+                    renderStats(p[0], p[1], p[2], p[3], p[4], p[7]);
+                } else if (p.length >= 5) {
+                    renderStats(p[0], p[1], p[2], p[3], p[4], 0);
+                }
             } else if (text.startsWith("[PASS] ITEM:") && isFetchingPass) {
                 const item = text.substring(12).trim();
                 if (item) passItemsSet.add(item);

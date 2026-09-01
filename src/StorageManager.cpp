@@ -319,8 +319,31 @@ void showStorageInfo() {
         }
         file.close();
     }
+
+    int passkeyCount = 0;
+    if (SPIFFS.exists("/passkeys.bin")) {
+        File file = SPIFFS.open("/passkeys.bin", "r");
+        if (file) {
+            while (file.available()) {
+                uint8_t status;
+                if (file.read(&status, 1) != 1) break;
+                file.seek(4, SeekCur); // Skip algId
+
+                uint16_t len;
+                if (file.read((uint8_t*)&len, 2) == 2) file.seek(len, SeekCur);
+                if (file.read((uint8_t*)&len, 2) == 2) file.seek(len, SeekCur);
+                if (file.read((uint8_t*)&len, 2) == 2) file.seek(len, SeekCur);
+
+                if (status == 1) {
+                    passkeyCount++;
+                }
+            }
+            file.close();
+        }
+    }
     xSemaphoreGive(storageMutex);
-    Terminal.printf("[STORAGE] STATS:%d,%d,%d,%.2f,%d,%d,%.2f\n", total, used, free, usage, count, chars, avg);
+    
+    Terminal.printf("[STORAGE] STATS:%d,%d,%d,%.2f,%d,%d,%.2f,%d\n", total, used, free, usage, count, chars, avg, passkeyCount);
 }
 
 void clearAllStoredPasswords() {
