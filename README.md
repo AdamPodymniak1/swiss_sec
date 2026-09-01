@@ -166,6 +166,90 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 
 ---
 
+# Project Todo & Development Roadmap
+
+## Completed Milestones
+
+### Core Cryptography & Security
+* [x] **Key Exchange:** Implemented Curve25519/X25519 key exchange protocol.
+* [x] **PBKDF2 Integration:** Added Password-Based Key Derivation Function 2 for master PIN handling and storage key derivation.
+* [x] **AES-GCM Encryption:** Integrated hardware AES Accelerator for authenticated file encryption (GCM mode).
+* [x] **True Random Number Generator (TRNG):** Implemented RF noise-based entropy sourcing for cryptographically secure password generation.
+* [x] **Fault Injection Countermeasures:** Added defenses against glitching (random multi-byte constraints, variable execution delays, etc.).
+* [x] **Side-Channel Protection:** Implemented constant-time memory comparison for PINs and hashes to prevent timing attacks.
+* [x] **Memory Sanitization:** Ensured sensitive data, passwords, and passkeys are securely wiped from RAM immediately after use.
+* [x] **Core Architecture & Obfuscation:** Established core system design and code obfuscation routines.
+* [x] **Advanced Threat Defenses:** Added comprehensive protections against Serial Port Sniffing, Keylogging, and Fake Prompt (MitM) attacks.
+
+### Hardware & Peripherals
+* [x] **Command Prompt Optimization:** Refined command input parsing routines for credential extraction to accelerate operations.
+* [x] **Modular Architecture:** Refactored the monolithic codebase into separate, maintainable source files.
+* [x] **OLED Notification Interface:** Integrated a dedicated OLED screen and hardware button for asynchronous confirmation workflows (e.g., verifying password transmission).
+* [x] **Biometric Authentication:** Restored fingerprint scanner integration with challenge-response verification flows.
+* [x] **Emergency Wipe Mechanism:** Implemented secure credential wiping after 10 consecutive failed PIN attempts, including full list deletion.
+* [x] **Peripheral Fallbacks:** Included support for alternative physical input (button fallback) and display options (OLED vs. LCD).
+
+### USB & FIDO2 / U2F Integration
+* [x] **Dual-Interface USB Stack:** Implemented a USB Composite Stack supporting simultaneous HID and CDC/COM port operation.
+* [x] **Host Validation:** Verified device enumeration and stability via Windows Device Manager.
+* [x] **FIDO HID Compliance:** Injected the official FIDO HID Report Descriptor and corrected CTAP2 HID framing mechanics.
+* [x] **P-256 ECC Support:** Expanded the cryptographic engine to support ECDSA P-256 with dedicated test suites in `SelfTestManager.cpp`.
+* [x] **CBOR Parser Engine:** Integrated and tested a robust CBOR parsing engine validated against the official FIDO2 Python library.
+* [x] **Resident Passkeys:** Updated storage architecture to manage resident passkey records and credential objects.
+* [x] **Session Management:** Implemented transaction timeouts, keepalive signals, and a 500ms channel lockout mechanism for stalled multi-packet transactions.
+* [x] **User Verification Routing:** Tied FIDO2 user verification directly to the biometric fingerprint scanner loop.
+* [x] **FIDO2 Core Flows:** Fully operational `MakeCredential` and `GetAssertion` pipelines, including authenticator data structuring, signature generation, and authentication.
+* [x] **Compatibility & Attestation:** Added FIDO U2F backward compatibility, fixed double-reading edge cases, and implemented attestation signing options.
+* [x] **FIDO Management Tools:** Added routines to list registered FIDO2 origins and selectively manage or delete individual credentials.
+* [x] **Request Filters:** Implemented strict validation for `excludeList` (preventing duplicate registrations) and `allowList` (rejecting unknown credentials prior to biometric prompts).
+* [x] **Asynchronous Cancellation:** Implemented robust handling for the `CTAPHID_CANCEL` (0x91) command.
+
+### Post-Quantum Cryptography (PQC)
+* [x] **Dynamic Heap & PQC Integration:** Introduced dynamic heap buffering and architectural support for Post-Quantum algorithms.
+* [x] **ML-DSA Implementation:** Integrated working implementations of ML-DSA (44, 65, and 87) within the FIDO2 stack.
+* [x] **Performance & Stability Fixes:** Resolved memory exhaustion bugs causing ESP32-S3 lockups during ML-DSA-65/87 registrations and optimized RS256 performance.
+
+### Password Manager & Dashboard
+* [x] **Core Refactoring:** Unified and stabilized the password manager architecture.
+* [x] **Storage Optimization:** Migrated key storage from JSON format to a high-efficiency binary structure.
+* [x] **Dual-Threaded Architecture:** Implemented task offloading and dual-threading to segregate crypto/USB handling from UI tasks.
+* [x] **User Interface & Feedback:** Implemented smooth left-to-right text scrolling for long strings on the OLED display and automated screen-clearing timeouts.
+* [x] **Web Dashboard:** Developed a comprehensive web-based interface for testing all system capabilities, managing vault statistics, adding new records via popup, and adjusting hardware settings.
+* [x] **Security Hardening (Dashboard):** Ensured the dashboard UI prevents third-party scripts from reading or exposing raw plaintext passwords and sensitive data.
+* [x] **TOTP Integration:** Added Time-based One-Time Password generation with an enhanced management interface.
+* [x] **Autofill & Parsing:** Refined browser integration scripts, registration interception, login detection, and resolved intermittent auto-fill failure bugs.
+* [x] **Code Quality:** Comprehensive cleanup of inline documentation, comments, and project licensing for GitHub publication.
+
+## Pending Roadmap & Future Tasks
+
+### Hardware & Protocol Expansion
+* [ ] **Device Detection:** Implement automatic detection routines to verify when the ESP32-S3 is plugged in for browser plugin communication.
+* [ ] **Connection Broadcasting:** Broadcast FIDO2 connection status messages when requested by web applications.
+* [ ] **Advanced CTAP2 Commands:**
+  * [ ] Client PIN (Command `0x06`)
+  * [ ] GetNextAssertion (Command `0x08`)
+  * [ ] Authenticator Reset (Command `0x07`)
+  * [ ] Credential Management API (Command `0x0A`)
+  * [ ] Stateless Credentials (Non-Resident Keys support)
+* [ ] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.
+* [ ] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
+
+### Security Auditing & Hardening
+* [ ] **Biometric Replay Mitigation:** Implement countermeasures against fingerprint sensor replay attacks.
+* [ ] **OLED Bus Security:** Secure I2C/SPI communications against bus sniffing and spoofing.
+* [ ] **Nonce Security:** Ensure strict entropy separation to prevent AES-GCM nonce reuse vulnerabilities.
+* [ ] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
+* [ ] **Credential Health Audit:** Implement security auditing for `/passwords.json` to flag weak, reused, or compromised passwords.
+
+### Backup, Recovery, & Architecture
+* [ ] **Encrypted Backup Solutions:** Architect a secure, user-controlled export/import mechanism for offline backup and recovery.
+* [ ] **Technical Documentation:** Draft comprehensive technical documentation covering hardware schematics, firmware structure, and protocol flows.
+* [ ] **Mobile Companion Application:** Explore the feasibility of a companion mobile application for credential management.
+* [ ] **Browser Extension Security:** Audit the browser extension pipeline against malicious script injections and clickjacking vectors.
+* [ ] **Physical Security (PCB):** Design a custom Printed Circuit Board (PCB) integrating physical tamper-mesh layers and environmental sensors.
+
+---
+
 ## License
 
 This project is licensed under the GNU GPL License. See the LICENSE file for details.
