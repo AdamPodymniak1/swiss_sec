@@ -1,7 +1,3 @@
-Here is the updated `README.md` incorporating the Chrome Extension features, operational overview, and step-by-step installation instructions.
-
----
-
 # SwissSec
 
 > Swiss Knife for all your cybersecurity needs
