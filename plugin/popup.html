@@ -33,11 +33,11 @@
         .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 11px; color: #bbb; }
         
         /* Lists & Favicons */
-        .data-list { list-style: none; padding: 0; margin: 0; max-height: 150px; overflow-y: auto; font-size: 12px; background: #111; border: 1px solid #222; border-radius: 4px; }
+        .data-list { list-style: none; padding: 0; margin: 0; max-height: 200px; overflow-y: auto; font-size: 12px; background: #111; border: 1px solid #222; border-radius: 4px; }
         .data-list li { padding: 6px 8px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
         .data-list li:last-child { border-bottom: none; }
         
-        .item-label { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+        .item-label { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
         .item-favicon { width: 16px; height: 16px; border-radius: 2px; flex-shrink: 0; background: #222; }
 
         .icon-btn { background: transparent; border: none; padding: 2px 4px; font-size: 13px; width: auto; margin: 0; color: #888; cursor: pointer; transition: transform 0.1s; }
@@ -46,6 +46,13 @@
 
         .empty-state { padding: 10px; text-align: center; color: #666; font-style: italic; }
         .info-status { font-size: 11px; color: #00ffff; margin-top: 4px; text-align: center; height: 14px; }
+
+        /* TOTP Dynamic List & Timer Bar */
+        .totp-item { display: flex; flex-direction: column; width: 100%; padding: 4px 0; }
+        .totp-header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 6px; }
+        .totp-code { font-size: 16px; font-family: monospace; letter-spacing: 2px; color: #00ffff; font-weight: bold; }
+        .totp-timer-bg { background: #262626; height: 4px; width: 100%; border-radius: 2px; overflow: hidden; }
+        .totp-timer-fill { background: #00ffff; height: 100%; transition: width 1s linear; }
 
         /* Diagnostic & Settings Visuals */
         .danger-btn { background: #550000; border-color: #880000; color: #ffcccc; }
@@ -62,8 +69,8 @@
     <div class="tab-bar" id="navTabs">
         <button class="tab-btn active" data-tab="tab-status">Status</button>
         <button class="tab-btn" data-tab="tab-dashboard">Vault</button>
-        <button class="tab-btn" data-tab="tab-settings">Settings</button>
         <button class="tab-btn" data-tab="tab-totp">TOTP</button>
+        <button class="tab-btn" data-tab="tab-settings">Settings</button>
     </div>
 
     <!-- TAB 1: Status & Unlock -->
@@ -79,7 +86,6 @@
 
     <!-- TAB 2: Vault Dashboard -->
     <div id="tab-dashboard" class="tab-content">
-        
         <!-- System Storage Stats -->
         <div class="action-group">
             <div class="action-title"><span>Storage Usage</span></div>
@@ -92,14 +98,11 @@
                 <span>Passwords</span>
                 <button id="btnListPass" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
             </div>
-            
-            <!-- Create New Password Input -->
             <div class="add-row">
                 <input type="text" id="newPassName" placeholder="Site / Name (e.g. github.com)">
                 <input type="password" id="newPassValue" placeholder="Blank for auto-gen">
                 <button id="btnCreatePass">Add</button>
             </div>
-            
             <ul id="passVisual" class="data-list"></ul>
         </div>
 
@@ -115,9 +118,32 @@
         <div id="vaultMessage" class="info-status"></div>
     </div>
 
-    <!-- TAB 3: Settings & Diagnostics -->
+    <!-- TAB 3: TOTP Authenticator -->
+    <div id="tab-totp" class="tab-content">
+        <!-- Active TOTP Codes List -->
+        <div class="action-group">
+            <div class="action-title">
+                <span>Authenticator Codes</span>
+                <button id="btnListTotp" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
+            </div>
+            <ul id="totpVisual" class="data-list">
+                <div class="empty-state">Syncing authenticators...</div>
+            </ul>
+        </div>
+
+        <!-- Add TOTP Secret -->
+        <div class="action-group">
+            <div class="action-title"><span>Add New Authenticator</span></div>
+            <div class="add-row">
+                <input type="text" id="totpAddName" placeholder="Account Name">
+                <input type="password" id="totpAddSecret" placeholder="Base32 Secret">
+                <button id="btnAddTotp">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 4: Settings & Diagnostics -->
     <div id="tab-settings" class="tab-content">
-        
         <!-- FIDO2 Algorithm -->
         <div class="action-group">
             <div class="action-title"><span>Default Crypto Algorithm</span></div>
@@ -151,32 +177,6 @@
             <button id="btnRegFinger">Enroll New Fingerprint</button>
             <button id="btnWipePass" class="danger-btn">Purge Password Vault</button>
             <button id="btnFactoryReset" class="danger-btn">Factory Reset (Wipe All)</button>
-        </div>
-    </div>
-
-    <!-- TAB 4: TOTP Authenticator -->
-    <div id="tab-totp" class="tab-content">
-        
-        <!-- Get TOTP Code -->
-        <div class="action-group">
-            <div class="action-title"><span>Generate Code</span></div>
-            <div class="add-row">
-                <input type="text" id="totpGetName" placeholder="Account Name (e.g. github.com)">
-                <button id="btnGetTotp">Get Code</button>
-            </div>
-            <div id="totpDisplay" style="font-size: 28px; font-family: monospace; text-align: center; letter-spacing: 8px; color: #00ffff; margin-top: 15px; margin-bottom: 5px; font-weight: bold; height: 35px;">
-                ------
-            </div>
-        </div>
-
-        <!-- Add TOTP Secret -->
-        <div class="action-group">
-            <div class="action-title"><span>Add New Authenticator</span></div>
-            <div class="add-row">
-                <input type="text" id="totpAddName" placeholder="Account Name">
-                <input type="password" id="totpAddSecret" placeholder="Base32 Secret">
-                <button id="btnAddTotp">Save</button>
-            </div>
         </div>
     </div>
 

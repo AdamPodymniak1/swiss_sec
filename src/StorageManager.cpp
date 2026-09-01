@@ -787,3 +787,65 @@ int loadDefaultCryptoAlg() {
     xSemaphoreGive(storageMutex);
     return val.toInt();
 }
+
+void handleTotpGetAll(uint32_t currentEpoch) {
+    if (!isStorageKeyLoaded || !SPIFFS.exists("/totp.json")) {
+        Terminal.println("[TOTP] OUT: END_ALL");
+        return;
+    }
+
+    File file = SPIFFS.open("/totp.json", "r");
+    JsonDocument doc;
+    if (deserializeJson(doc, file) == DeserializationError::Ok) {
+        JsonObject obj = doc.as<JsonObject>();
+        for (JsonPair pair : obj) {
+            const char* accountName = pair.key().c_str();
+            String encryptedValue = pair.value().as<String>();
+            
+            String decryptedSecret = decryptStoragePayload(encryptedValue, storageKey);
+            if (decryptedSecret != "") {
+                String codeStr = generateTOTP(decryptedSecret, currentEpoch);
+                Terminal.printf("[TOTP] CODE:%s:%s\n", accountName, codeStr.c_str());
+            }
+        }
+    }
+    file.close();
+    Terminal.println("[TOTP] OUT: END_ALL");
+}
+
+bool deleteTotpSecret(const String &name) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/totp.json")) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    
+    File file = SPIFFS.open("/totp.json", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+
+    if (!doc[name].is<JsonVariant>()) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    
+    doc.remove(name);
+
+    file = SPIFFS.open("/totp.json", "w");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    
+    serializeJson(doc, file);
+    file.close();
+    xSemaphoreGive(storageMutex);
+    
+    return true;
+}

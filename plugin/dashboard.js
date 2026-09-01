@@ -5,6 +5,7 @@ let isConnected = false;
 let authState = "UNKNOWN";
 let pendingAutoGenerate = null;
 let pendingGetPassword = null;
+let pendingDeleteTotpName = null;
 
 // Track interactive multi-step CLI operations
 let pendingGetFidoDomain = null;
@@ -180,6 +181,35 @@ function processIncomingLine(text) {
     } else if (text.includes("[PASS] OUT:") && !text.includes("SAVED") && !text.includes("DELETED")) {
         passwordValue = text.split("[PASS] OUT:")[1].trim();
         safeText = text.replace(passwordValue, "********");
+    }
+
+    if (text.includes("[PASS] OUT:DELETED") || text.includes("[TOTP] OUT:DELETED")) {
+        const deletedIdentifier = pendingDeletePassName || pendingDeleteFidoDomain || pendingDeleteTotpName || "item";
+        let category = "unknown";
+        if (pendingDeletePassName) category = "pass";
+        else if (pendingDeleteFidoDomain) category = "fido";
+        else if (pendingDeleteTotpName) category = "totp";
+
+        chrome.runtime.sendMessage({
+            target: "popup",
+            type: "DELETE_CONFIRMED",
+            category: category,
+            identifier: deletedIdentifier
+        }).catch(() => {});
+
+        pendingDeletePassName = null;
+        pendingDeleteFidoDomain = null;
+        pendingDeleteTotpName = null;
+    } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
+        if (pendingDeletePassName || pendingDeleteFidoDomain || pendingDeleteTotpName) {
+            chrome.runtime.sendMessage({
+                target: "popup",
+                type: "DELETE_FAILED"
+            }).catch(() => {});
+            pendingDeletePassName = null;
+            pendingDeleteFidoDomain = null;
+            pendingDeleteTotpName = null;
+        }
     }
 
     if (passwordValue) {
@@ -380,6 +410,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "DISCONNECT") {
         disconnect();
         sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_GET_ALL_TOTP") {
+        const epochNow = Math.floor(Date.now() / 1000);
+        sendSecure(`totp_get_all ${epochNow}`);
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_DELETE_TOTP") {
+        pendingDeleteTotpName = message.name;
+        terminal.innerText += "[System] Deleting TOTP for " + message.name + "\n";
+        
+        (async () => {
+            await sendSecure("totp_delete");
+            await sendSecure(pendingDeleteTotpName);
+            sendResponse({ status: "ok" });
+        })();
+        return true; 
     }
     return true;
 });

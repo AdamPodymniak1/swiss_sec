@@ -108,6 +108,8 @@ void cliTask(void *pvParameters) {
                         Terminal.println("  delete_fido     - Wipe a FIDO2 website and all saved keys");
                         Terminal.println("  totp_add        - Add a new Base32 TOTP secret");
                         Terminal.println("  totp_get        - Generate a 6-digit TOTP code");
+                        Terminal.println("  totp_get_all    - Generate 6-digit TOTP codes for all stored secrets");
+                        Terminal.println("  totp_delete     - Delete a stored TOTP secret");
                         Terminal.println("  delete_pin      - FACTORY RESET (Wipes PIN, Vault, & Fingerprints)");
                         Terminal.println("  delete_pass     - Purge vault passwords and passkeys");
                         Terminal.println("  diagnostics     - Run automated verification testing suite");
@@ -184,8 +186,13 @@ void cliTask(void *pvParameters) {
                         } else {
                             Terminal.println("[ERR] CODE:ENROLL_FAILED");
                         }
-                    }
-                     else {
+                    } else if (input.startsWith("totp_get_all ")) {
+                        uint32_t currentEpoch = input.substring(13).toInt();
+                        handleTotpGetAll(currentEpoch);
+                    } else if (input == "totp_delete") {
+                        Terminal.println("[TOTP] REQ:NAME");
+                        currentCommandState = STATE_AWAITING_TOTP_DELETE_NAME;
+                    }else {
                         Terminal.println("[ERR] CODE:UNKNOWN_CMD");
                     }
                     break;
@@ -297,6 +304,14 @@ void cliTask(void *pvParameters) {
                     currentCommandState = STATE_READY;
                     break;
                 }
+                case STATE_AWAITING_TOTP_DELETE_NAME:
+                    if (deleteTotpSecret(input)) {
+                        Terminal.println("[TOTP] OUT:DELETED");
+                    } else {
+                        Terminal.println("[ERR] CODE:NOT_FOUND");
+                    }
+                    currentCommandState = STATE_READY;
+                    break;
                 default:
                     currentCommandState = STATE_READY;
                     break;

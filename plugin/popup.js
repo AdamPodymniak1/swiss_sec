@@ -14,6 +14,10 @@ let fidoItemsSet = new Set();
 let isFetchingPass = false;
 let isFetchingFido = false;
 
+// TOTP State
+let totpEntries = new Map();
+let totpInterval = null;
+
 // State machine lock for CLI operations
 let pendingTask = null;
 
@@ -26,7 +30,7 @@ function showMsg(text, color = "#00ffff") {
 // --- Navigation Tabs ---
 document.querySelectorAll('.tab-btn').forEach(button => {
     button.addEventListener('click', () => {
-        if (!isAuthenticated && button.dataset.tab === "tab-dashboard") return;
+        if (!isAuthenticated && button.dataset.tab !== "tab-status") return;
         document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
 
@@ -37,6 +41,8 @@ document.querySelectorAll('.tab-btn').forEach(button => {
             chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
             document.getElementById('btnListPass').click();
             document.getElementById('btnListFido').click();
+        } else if (button.dataset.tab === "tab-totp") {
+            document.getElementById('btnListTotp').click();
         }
     });
 });
@@ -165,6 +171,90 @@ function renderList(elementId, itemsArray, type) {
     });
 }
 
+// --- TOTP UI & Countdown Slider ---
+function renderTotpList() {
+    const ul = document.getElementById('totpVisual');
+    ul.innerHTML = "";
+    
+    if (totpEntries.size === 0) {
+        ul.innerHTML = `<div class="empty-state">No authenticators found.</div>`;
+        return;
+    }
+    
+    totpEntries.forEach((code, name) => {
+        const li = document.createElement('li');
+        li.style.cursor = "pointer";
+        li.title = "Click to copy code";
+        li.onclick = () => {
+            navigator.clipboard.writeText(code);
+            showMsg("Code copied!", "lime");
+        };
+        
+        const formattedCode = code.length === 6 ? `${code.substring(0,3)} ${code.substring(3)}` : code;
+
+        const container = document.createElement('div');
+        container.className = "totp-item";
+        
+        const header = document.createElement('div');
+        header.className = "totp-header";
+        
+        const label = document.createElement('div');
+        label.className = "item-label";
+        label.innerHTML = `<img class="item-favicon" src="${getFaviconUrl(name)}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22 fill=%22%2300ffff%22><circle cx=%228%22 cy=%228%22 r=%225%22/></svg>'"><span>${name}</span>`;
+        
+        const actionArea = document.createElement('div');
+        actionArea.style.display = "flex";
+        actionArea.style.alignItems = "center";
+        actionArea.style.gap = "8px";
+        
+        const codeDiv = document.createElement('div');
+        codeDiv.className = "totp-code";
+        codeDiv.innerText = formattedCode;
+        
+        const delBtn = document.createElement('button');
+        delBtn.className = "icon-btn btn-del";
+        delBtn.innerHTML = "🗑️";
+        delBtn.title = `Delete ${name}`;
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            window.deleteItem('totp', name);
+        };
+        
+        actionArea.appendChild(codeDiv);
+        actionArea.appendChild(delBtn);
+        header.appendChild(label);
+        header.appendChild(actionArea);
+        
+        const timerBg = document.createElement('div');
+        timerBg.className = "totp-timer-bg";
+        timerBg.innerHTML = `<div class="totp-timer-fill"></div>`;
+        
+        container.appendChild(header);
+        container.appendChild(timerBg);
+        li.appendChild(container);
+        ul.appendChild(li);
+    });
+
+    updateTotpTimers();
+    if (totpInterval) clearInterval(totpInterval);
+    totpInterval = setInterval(updateTotpTimers, 1000);
+}
+
+function updateTotpTimers() {
+    const epoch = Math.floor(Date.now() / 1000);
+    const remaining = 30 - (epoch % 30);
+    const pct = (remaining / 30) * 100;
+    
+    if (remaining === 30 && totpEntries.size > 0) {
+        document.getElementById('btnListTotp').click();
+    } else {
+        document.querySelectorAll('.totp-timer-fill').forEach(bar => {
+            bar.style.width = pct + '%';
+            bar.style.backgroundColor = remaining <= 5 ? '#ff4444' : '#00ffff';
+        });
+    }
+}
+
 // --- Core Actions ---
 window.deleteItem = function(type, item) {
     if (!confirm(`Are you sure you want to permanently delete '${item}'?`)) return;
@@ -172,9 +262,12 @@ window.deleteItem = function(type, item) {
     if (type === 'pass') {
         showMsg(`Deleting '${item}'...`);
         chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_PASS", name: item });
-    } else {
+    } else if (type === 'fido') {
         showMsg(`Deleting FIDO key '${item}'...`);
         chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_FIDO", domain: item });
+    } else if (type === 'totp') {
+        showMsg(`Deleting TOTP '${item}'...`);
+        chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_TOTP", name: item });
     }
 };
 
@@ -239,19 +332,14 @@ document.getElementById('btnFactoryReset').onclick = () => {
 };
 
 // --- TOTP Actions ---
-document.getElementById('btnGetTotp').onclick = () => {
-    const name = document.getElementById('totpGetName').value.trim();
-    if (!name) return showMsg("Account name required!", "orange");
-    
-    document.getElementById('totpDisplay').innerText = "------";
-    document.getElementById('totpDisplay').style.color = "#444"; // Dim while fetching
-    pendingTask = { type: 'GET_TOTP', name: name };
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_get" });
+document.getElementById('btnListTotp').onclick = () => {
+    document.getElementById('totpVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
+    totpEntries.clear();
+    chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_GET_ALL_TOTP" });
 };
 
 document.getElementById('btnAddTotp').onclick = () => {
     const name = document.getElementById('totpAddName').value.trim();
-    // Strip spaces from Base32 secrets (common when copying from setup screens)
     const secret = document.getElementById('totpAddSecret').value.trim().replace(/\s+/g, '');
     
     if (!name || !secret) return showMsg("Name and Secret required!", "orange");
@@ -266,7 +354,7 @@ document.getElementById('btnAddTotp').onclick = () => {
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_add" });
 };
 
-// --- Serial Stream Event Listener & Dynamic CLI State Machine ---
+// --- Serial Stream Event Listener ---
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
         const lines = (message.text || "").split(/\r?\n/);
@@ -291,7 +379,6 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (text.startsWith("[FIDO2] ITEM:") && isFetchingFido) {
                 const item = text.substring(13).trim();
                 if (item) fidoItemsSet.add(item);
-            // Existing parser handlers above...
             } else if (text.startsWith("[FIDO2] OUT:") && isFetchingFido) {
                 isFetchingFido = false;
                 renderList('fidoVisual', Array.from(fidoItemsSet), 'fido');
@@ -326,7 +413,6 @@ chrome.runtime.onMessage.addListener((message) => {
                 document.getElementById('btnListPass').click();
                 document.getElementById('btnListFido').click();
             } else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) {
-                // Clear Chrome caches and force lock the UI
                 chrome.storage.local.clear(() => {
                     showMsg("Factory Reset Complete", "red");
                     setTimeout(() => document.getElementById('disconnectBtn').click(), 1000);
@@ -363,24 +449,21 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (text === "[FIDO2] OUT:DELETED") {
                 showMsg("FIDO Key deleted!", "lime");
                 document.getElementById('btnListFido').click();
+            } else if (text === "[TOTP] OUT:DELETED") {
+                showMsg("TOTP deleted!", "lime");
+                document.getElementById('btnListTotp').click();
             } else if (text.startsWith("[ERR]")) {
-                showMsg(`Hardware Error: ${text.replace("[ERR] CODE:", "")}`, "orange");
-                pendingTask = null;
+                showMsg("Error: " + text, "orange");
             }
 
-            // --- TOTP Parsers ---
+            // --- Bulk & Single TOTP Parsers ---
             if (text.startsWith("[TOTP] CODE:")) {
-                const code = text.replace("[TOTP] CODE:", "").trim();
-                const display = document.getElementById('totpDisplay');
-                display.innerText = code;
-                display.style.color = "#00ffff"; // Restore bright color
-                showMsg("Code Generated!", "lime");
-                pendingTask = null;
-            }
-
-            // TOTP Code Generation Flow
-            if (pendingTask && pendingTask.type === 'GET_TOTP' && text.includes("[TOTP] REQ:NAME")) {
-                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.name });
+                const parts = text.replace("[TOTP] CODE:", "").trim().split(":");
+                if (parts.length >= 2) {
+                    totpEntries.set(parts[0], parts[1]);
+                }
+            } else if (text === "[TOTP] OUT: END_ALL" || text === "[TOTP] OUT:END_ALL") {
+                renderTotpList();
             }
 
             // TOTP Registration Flow
@@ -392,10 +475,10 @@ chrome.runtime.onMessage.addListener((message) => {
                     pendingTask.step = 'DONE';
                     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.secret });
                     
-                    // The ESP32 returns to STATE_READY silently after saving the secret
                     setTimeout(() => {
                         showMsg("TOTP Secret Saved!", "lime");
                         pendingTask = null;
+                        document.getElementById('btnListTotp').click();
                     }, 400); 
                 }
             }
