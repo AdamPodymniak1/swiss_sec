@@ -327,7 +327,7 @@ void showStorageInfo() {
             while (file.available()) {
                 uint8_t status;
                 if (file.read(&status, 1) != 1) break;
-                file.seek(4, SeekCur); // Skip algId
+                file.seek(4, SeekCur); // Skip the algorithm identifier.
 
                 uint16_t len;
                 if (file.read((uint8_t*)&len, 2) == 2) file.seek(len, SeekCur);

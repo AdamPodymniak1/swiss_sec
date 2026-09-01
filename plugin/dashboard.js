@@ -7,7 +7,7 @@ let pendingAutoGenerate = null;
 let pendingGetPassword = null;
 let pendingDeleteTotpName = null;
 
-// Track interactive multi-step CLI operations
+// Tracks multi-step firmware interactions and pending confirmations.
 let pendingGetFidoDomain = null;
 let pendingDeletePassName = null;
 let pendingDeleteFidoDomain = null;
@@ -117,7 +117,7 @@ function processIncomingLine(text) {
     else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
     else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
 
-    // Handling password autofill workflows
+    // Handle automatic password creation and retrieval flows.
     if (pendingAutoGenerate) {
         if (text.includes("[PASS] REQ:NAME")) {
             sendSecure(pendingAutoGenerate.domain);
@@ -136,7 +136,7 @@ function processIncomingLine(text) {
         }
     }
 
-    // --- Interactive CLI Step Parsers ---
+    // Parse interactive CLI prompts that require a follow-up value.
     if (text.includes("[FIDO2] REQ:WEBSITE_DOMAIN")) {
         if (pendingGetFidoDomain) {
             sendSecure(pendingGetFidoDomain);
@@ -144,7 +144,7 @@ function processIncomingLine(text) {
         }
     }
 
-    // --- Deletion Confirmation Workflow Handler ---
+    // Handle delete confirmation and not-found responses.
     if (text.includes("[PASS] OUT:DELETED")) {
         const deletedIdentifier = pendingDeletePassName || pendingDeleteFidoDomain || "item";
         const category = pendingDeletePassName ? "pass" : "fido";

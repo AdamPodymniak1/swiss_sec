@@ -1,6 +1,6 @@
 #include "CborEngine.h"
 
-// Encoder writes definite-length CBOR forms used by CTAP2 request and response maps.
+// Encodes definite-length CBOR primitives used in CTAP2 request and response maps.
 bool CborEncoder::writeUnsignedInt(uint64_t val) {
     if (offset >= capacity) return false;
 
@@ -105,7 +105,7 @@ bool CborEncoder::writeTextString(const char *text) {
     return true;
 }
 
-// Parser methods roll back on shape mismatches so callers can skip unknown fields safely.
+// Parser methods revert to the saved offset when a field shape does not match.
 bool CborParser::readTypeAndValue(uint8_t &majorType, uint64_t &value) {
     if (offset >= length) return false;
 
@@ -187,7 +187,7 @@ bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
     return true;
 }
 
-// Unknown CBOR values are skipped recursively to tolerate optional browser fields.
+// Unknown values are skipped recursively to tolerate optional browser-provided fields.
 bool CborParser::skipValue() {
     if (offset >= length) return false;
 

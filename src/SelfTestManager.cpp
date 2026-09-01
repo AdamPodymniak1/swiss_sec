@@ -6,7 +6,7 @@
 #include "StorageManager.h"
 #include "mbedtls/ecdsa.h"
 
-// Diagnostics stay small and serial-readable so they can run on the device itself.
+// Keep diagnostics compact and serial-friendly for on-device execution.
 void printTestResult(const char* featureName, bool success) {
     if (success) {
         Serial.print("[TEST:PASS] -> ");

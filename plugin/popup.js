@@ -7,18 +7,18 @@ const vaultMsg = document.getElementById('vaultMessage');
 
 let isAuthenticated = false;
 
-// Strict Sets prevent duplicate elements from rendering
+// Prevent duplicate list entries while refreshing vault data.
 let passItemsSet = new Set();
 let fidoItemsSet = new Set();
 
 let isFetchingPass = false;
 let isFetchingFido = false;
 
-// TOTP State
+// TOTP state management.
 let totpEntries = new Map();
 let totpInterval = null;
 
-// State machine lock for CLI operations
+// Tracks the active CLI workflow state.
 let pendingTask = null;
 
 function showMsg(text, color = "#00ffff") {
@@ -27,7 +27,7 @@ function showMsg(text, color = "#00ffff") {
     setTimeout(() => { if (vaultMsg.innerText === text) vaultMsg.innerText = ""; }, 3500);
 }
 
-// --- Navigation Tabs ---
+// Navigation tab switching.
 document.querySelectorAll('.tab-btn').forEach(button => {
     button.addEventListener('click', () => {
         if (!isAuthenticated && button.dataset.tab !== "tab-status") return;
@@ -47,7 +47,7 @@ document.querySelectorAll('.tab-btn').forEach(button => {
     });
 });
 
-// --- Hardware Status & Auth ---
+// Device connection and authentication status.
 function checkStatus() {
     chrome.runtime.sendMessage({ target: "dashboard", type: "PING" }, (response) => {
         if (chrome.runtime.lastError || !response) {
@@ -111,7 +111,7 @@ document.getElementById('disconnectBtn').onclick = () => {
     });
 };
 
-// --- Favicon & UI Renderers ---
+// Rendering helpers for list entries and favicons.
 function getFaviconUrl(domain) {
     let clean = domain.toLowerCase().trim();
     if (clean.includes(':')) clean = clean.split(':')[0];
@@ -171,7 +171,7 @@ function renderList(elementId, itemsArray, type) {
     });
 }
 
-// --- TOTP UI & Countdown Slider ---
+// TOTP list rendering and time-window update.
 function renderTotpList() {
     const ul = document.getElementById('totpVisual');
     ul.innerHTML = "";
@@ -255,7 +255,7 @@ function updateTotpTimers() {
     }
 }
 
-// --- Core Actions ---
+// Core item actions.
 window.deleteItem = function(type, item) {
     if (!confirm(`Are you sure you want to permanently delete '${item}'?`)) return;
     
@@ -301,7 +301,7 @@ document.getElementById('btnListFido').onclick = () => {
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "list_fido" });
 };
 
-// --- Settings & Diagnostics Actions ---
+// Diagnostics and device management actions.
 document.getElementById('btnRunDiag').onclick = () => {
     document.getElementById('diagVisual').innerHTML = '<div class="empty-state">Testing subsystems...</div>';
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "diagnostics" });
@@ -331,7 +331,7 @@ document.getElementById('btnFactoryReset').onclick = () => {
     }
 };
 
-// --- TOTP Actions ---
+// TOTP management actions.
 document.getElementById('btnListTotp').onclick = () => {
     document.getElementById('totpVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
     totpEntries.clear();
@@ -354,7 +354,7 @@ document.getElementById('btnAddTotp').onclick = () => {
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_add" });
 };
 
-// --- Serial Stream Event Listener ---
+// Serial output parser for the dashboard state machine.
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
         const lines = (message.text || "").split(/\r?\n/);
@@ -384,7 +384,7 @@ chrome.runtime.onMessage.addListener((message) => {
                 renderList('fidoVisual', Array.from(fidoItemsSet), 'fido');
             }
 
-            // --- Diagnostics Parser ---
+            // Parse device diagnostics output.
             if (text.startsWith("[TEST:PASS] -> ")) {
                 const diagName = text.replace("[TEST:PASS] -> ", "");
                 const ul = document.getElementById('diagVisual');
@@ -397,12 +397,12 @@ chrome.runtime.onMessage.addListener((message) => {
                 ul.innerHTML += `<li><span class="test-fail">❌</span> ${diagName}</li>`;
             }
 
-            // --- Async State Machines ---
+            // Resume pending async workflows.
             if (pendingTask && pendingTask.type === 'SET_CRYPTO' && text.includes("[SYS] REQ:ALG_ID")) {
                 chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.val });
             }
 
-            // --- Status Notifications ---
+            // Surface device status events to the UI.
             if (text.includes("[SYS] DEFAULT_CRYPTO_ALG_SET:")) {
                 showMsg("Algorithm updated!", "lime");
                 pendingTask = null;
@@ -456,7 +456,7 @@ chrome.runtime.onMessage.addListener((message) => {
                 showMsg("Error: " + text, "orange");
             }
 
-            // --- Bulk & Single TOTP Parsers ---
+            // Parse bulk and single TOTP responses.
             if (text.startsWith("[TOTP] CODE:")) {
                 const parts = text.replace("[TOTP] CODE:", "").trim().split(":");
                 if (parts.length >= 2) {
@@ -466,7 +466,7 @@ chrome.runtime.onMessage.addListener((message) => {
                 renderTotpList();
             }
 
-            // TOTP Registration Flow
+            // Complete the TOTP registration flow.
             if (pendingTask && pendingTask.type === 'ADD_TOTP') {
                 if (text.includes("[TOTP] REQ:NAME") && pendingTask.step === 'WAIT_NAME') {
                     pendingTask.step = 'WAIT_SECRET';

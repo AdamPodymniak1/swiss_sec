@@ -80,7 +80,7 @@ bool fidoVerifyFingerprint() {
 #endif
 }
 
-// CTAPHID runs on fixed 64-byte USB reports for both input and output.
+// CTAPHID uses fixed 64-byte USB reports for both input and output.
 const uint8_t fido_report_descriptor[34] = {
     0x06, 0xD0, 0xF1, 
     0x09, 0x01,       
@@ -114,7 +114,7 @@ uint16_t FIDO2HIDDevice::_onGetDescriptor(uint8_t* dst) {
     return sizeof(fido_report_descriptor);
 }
 
-// Initial HID packets carry 57 data bytes; continuation packets carry 59.
+// Initial HID packets carry 57 bytes; continuation packets carry 59 bytes.
 void FIDO2HIDDevice::sendCtapResponse(uint32_t channel, uint8_t cmd, const uint8_t* data, uint16_t len) {
     uint8_t packet[64] = {0};
     uint16_t offset = 0;
