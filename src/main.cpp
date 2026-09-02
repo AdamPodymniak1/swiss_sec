@@ -346,17 +346,9 @@ void setup() {
     FidoHID.begin();
     USB.begin();
 
-    unsigned long startMillis = millis();
-    while (!Serial && (millis() - startMillis < 4000)) delay(10);
-
-    delay(200);
-    Serial.flush();
-    while(Serial.available() > 0) { Serial.read(); }
-
     initCrypto();
 
     if (!initStorage()) {
-        Serial.println("[SYS] ERR:SPIFFS_MOUNT_FAILED");
         showDisplayMessage(1, "SPIFFS FAILED", "", 0);
         return;
     }

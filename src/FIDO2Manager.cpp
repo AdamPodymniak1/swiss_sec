@@ -1133,13 +1133,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         bool biometricVerified = false;
         if (optionUP || optionUV) {
-            if (millis() - lastFingerprintSuccessTime < 5000) {
+            if (lastFingerprintSuccessTime > 0 && millis() - lastFingerprintSuccessTime < 5000) {
                 biometricVerified = true;
             } else {
                 showDisplayMessage(1, "VERIFY FINGER", "", 0);
 
                 bool biometricCanceled = false;
-                unsigned long authStart = millis(); unsigned long lastKeepAlive = 0;
+                unsigned long authStart = millis(); 
+                unsigned long lastKeepAlive = 0;
+                
                 while (millis() - authStart < 15000) {
                     if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
                         hasPendingCommand = false;
@@ -1148,12 +1150,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     }
 
                     if (millis() - lastKeepAlive > 500) {
-                        uint8_t status = 0x02; sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        uint8_t status = 0x02; 
+                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
                         lastKeepAlive = millis();
                     }
                     if (fidoVerifyFingerprint()) {
                         biometricVerified = true;
-                        lastFingerprintSuccessTime = millis(); break;
+                        lastFingerprintSuccessTime = millis(); 
+                        break;
                     }
                     delay(50);
                 }
@@ -1167,9 +1171,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 }
             }
             if (!biometricVerified) {
-                uint8_t err = 0x34; sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); free(responseBuffer); return;
+                uint8_t err = 0x34; 
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1); 
+                free(responseBuffer); 
+                return; 
             }
-        } else { biometricVerified = true; }
+        } else { 
+            biometricVerified = true; 
+        }
 
         uint8_t authData[37] = {0};
 
