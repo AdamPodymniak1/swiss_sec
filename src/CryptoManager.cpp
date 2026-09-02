@@ -257,23 +257,40 @@ void SecureTerminal::flush() {
 }
 
 String generateRandomPassword(size_t length) {
-  const char charPool[] = "abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ23456789!@#$%^*()-_=+";
-  size_t poolSize = sizeof(charPool) - 1;
+    if (length < 4) length = 4;
 
-  uint8_t *randomBytes = (uint8_t *)malloc(length);
-  if (!randomBytes) return "";
+    const char lowerPool[] = "abcdefghijkmnopqrstuvwxyz";
+    const char upperPool[] = "ABCDEFGHIJKLMNPQRSTUVWXYZ";
+    const char numPool[] = "23456789";
+    const char symPool[] = "!@#$%^*()-_=+";
+    const char allPool[] = "abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ23456789!@#$%^*()-_=+";
 
-  esp_fill_random(randomBytes, length);
+    uint8_t *randomBytes = (uint8_t *)malloc(length);
+    if (!randomBytes) return "";
 
-  String password = "";
-  password.reserve(length);
+    esp_fill_random(randomBytes, length);
 
-  for (size_t i = 0; i < length; i++) {
-    password += charPool[randomBytes[i] % poolSize];
-  }
+    String password = "";
+    password.reserve(length);
 
-  free(randomBytes);
-  return password;
+    password += lowerPool[randomBytes[0] % (sizeof(lowerPool) - 1)];
+    password += upperPool[randomBytes[1] % (sizeof(upperPool) - 1)];
+    password += numPool[randomBytes[2] % (sizeof(numPool) - 1)];
+    password += symPool[randomBytes[3] % (sizeof(symPool) - 1)];
+
+    for (size_t i = 4; i < length; i++) {
+        password += allPool[randomBytes[i] % (sizeof(allPool) - 1)];
+    }
+
+    for (size_t i = 0; i < length; i++) {
+        size_t j = randomBytes[i] % length;
+        char temp = password[i];
+        password[i] = password[j];
+        password[j] = temp;
+    }
+
+    free(randomBytes);
+    return password;
 }
 
 // Vault and passkey payloads use a dedicated 256-bit wrapping key.

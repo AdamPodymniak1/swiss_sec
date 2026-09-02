@@ -140,7 +140,16 @@ function renderList(elementId, itemsArray, type) {
         return;
     }
     
-    itemsArray.forEach(item => {
+    itemsArray.forEach(rawItem => {
+        let item = rawItem;
+        let isWeak = false;
+        
+        if (type === 'pass' && rawItem.includes('|')) {
+            const parts = rawItem.split('|');
+            item = parts[0];
+            isWeak = (parts[1] === 'WEAK');
+        }
+        
         const li = document.createElement('li');
         
         const labelDiv = document.createElement('div');
@@ -158,6 +167,19 @@ function renderList(elementId, itemsArray, type) {
         
         labelDiv.appendChild(img);
         labelDiv.appendChild(textSpan);
+        
+        if (isWeak) {
+            const warnSpan = document.createElement('span');
+            warnSpan.innerText = "WEAK";
+            warnSpan.style.color = "#ffaa00";
+            warnSpan.style.fontSize = "9px";
+            warnSpan.style.marginLeft = "8px";
+            warnSpan.style.border = "1px solid #ffaa00";
+            warnSpan.style.padding = "2px 4px";
+            warnSpan.style.borderRadius = "3px";
+            warnSpan.style.fontWeight = "bold";
+            labelDiv.appendChild(warnSpan);
+        }
         
         const delBtn = document.createElement('button');
         delBtn.className = "icon-btn btn-del";

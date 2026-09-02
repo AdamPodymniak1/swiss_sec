@@ -298,15 +298,78 @@ void listPasswords() {
         return;
     }
     JsonDocument doc;
-    deserializeJson(doc, file);
+    DeserializationError error = deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
 
-    JsonObject obj = doc.as<JsonObject>();
-    for (JsonPair pair : obj) {
-        Terminal.print("[PASS] ITEM:");
-        Terminal.println(pair.key().c_str());
+    if (error) {
+        Terminal.println("[ERR] CODE:READ_FAILED");
+        return;
     }
+
+    JsonObject obj = doc.as<JsonObject>();
+    std::vector<String> passwords;
+    std::vector<String> names;
+
+    for (JsonPair pair : obj) {
+        String name = pair.key().c_str();
+        String encryptedValue = pair.value().as<String>();
+        String decrypted = decryptStoragePayload(encryptedValue, storageKey);
+        names.push_back(name);
+        passwords.push_back(decrypted);
+    }
+
+    for (size_t i = 0; i < names.size(); i++) {
+        String name = names[i];
+        String pwd = passwords[i];
+        bool isWeak = false;
+
+        if (pwd.length() < 12) {
+            isWeak = true;
+        } else {
+            bool hasNum = false;
+            bool hasUpper = false;
+            bool hasLower = false;
+            bool hasSpec = false;
+            
+            for (int c = 0; c < pwd.length(); c++) {
+                char ch = pwd[c];
+                if (isdigit(ch)) hasNum = true;
+                else if (isupper(ch)) hasUpper = true;
+                else if (islower(ch)) hasLower = true;
+                else hasSpec = true;
+            }
+            if (!hasNum || !hasUpper || !hasLower || !hasSpec) {
+                isWeak = true;
+            }
+        }
+
+        int freq = 0;
+        for (size_t j = 0; j < passwords.size(); j++) {
+            if (passwords[j] == pwd) {
+                freq++;
+            }
+        }
+        if (freq > 1) {
+            isWeak = true;
+        }
+
+        Terminal.print("[PASS] ITEM:");
+        Terminal.print(name);
+        if (isWeak) {
+            Terminal.println("|WEAK");
+        } else {
+            Terminal.println("|OK");
+        }
+    }
+
+    for (size_t i = 0; i < passwords.size(); i++) {
+        if (passwords[i].length() > 0) {
+            memset(const_cast<char*>(passwords[i].c_str()), 0, passwords[i].length());
+            passwords[i] = "";
+        }
+    }
+
     Terminal.println("[PASS] OUT:LIST_END");
 }
 
