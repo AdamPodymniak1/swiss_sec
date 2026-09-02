@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include "Globals.h"
 #include <vector>
+#include "mbedtls/pkcs5.h"
 
 static byte storageKey[32] = {0};
 static bool isStorageKeyLoaded = false;
@@ -24,10 +25,21 @@ static String readSpiffsString(File &file) {
 void deriveStorageKey(const String &pin) {
     mbedtls_md_context_t ctx;
     mbedtls_md_init(&ctx);
-    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
-    mbedtls_md_starts(&ctx);
-    mbedtls_md_update(&ctx, (const unsigned char *)pin.c_str(), pin.length());
-    mbedtls_md_finish(&ctx, storageKey);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+
+    const unsigned char salt[] = "VAULT_STORAGE_SALT";
+    
+    mbedtls_pkcs5_pbkdf2_hmac(
+        &ctx, 
+        (const unsigned char *)pin.c_str(), 
+        pin.length(), 
+        salt, 
+        sizeof(salt) - 1, 
+        10000, 
+        32, 
+        storageKey
+    );
+                              
     mbedtls_md_free(&ctx);
     isStorageKeyLoaded = true;
 }
