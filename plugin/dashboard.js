@@ -46,6 +46,18 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (ports.length > 0) {
         await connect();
     }
+
+    navigator.serial.addEventListener('connect', async () => {
+        if (!isConnected) {
+            await connect();
+        }
+    });
+
+    navigator.serial.addEventListener('disconnect', async () => {
+        if (isConnected) {
+            await disconnect();
+        }
+    });
 });
 
 connectBtn.onclick = async () => {
