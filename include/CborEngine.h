@@ -1,9 +1,12 @@
+// CborEngine.h
 #ifndef CBOR_ENGINE_H
 #define CBOR_ENGINE_H
 
 #include <Arduino.h>
 
-// Small CBOR encoder/decoder tailored to the CTAP2 structures this firmware uses.
+#define MAX_CBOR_DEPTH 16
+#define MAX_CBOR_ELEMENTS 256
+
 class CborEncoder {
 private:
     uint8_t *buffer;
@@ -54,7 +57,7 @@ public:
     bool readTypeAndValue(uint8_t &majorType, uint64_t &value);
     bool readByteString(uint8_t *destBuffer, size_t maxLen, size_t &actualLen);
     bool readTextString(char *destBuffer, size_t maxLen);
-    bool skipValue();
+    bool skipValue(uint8_t depth = 0);
 };
 
 #endif

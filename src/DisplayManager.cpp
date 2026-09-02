@@ -60,7 +60,7 @@ void displayRenderTask(void *pvParameters) {
         if (t1.length() > 0) u8g2.drawStr(x1, 15, t1.c_str());
         if (t2.length() > 0) u8g2.drawStr(x2, 28, t2.c_str());
         
-        // Draw dynamic security watermark in the top right corner
+        // Draw dynamic security watermark in the top right corner (comment out if not needed)
         u8g2.setFont(u8g2_font_micro_tr);
         char nonceStr[6];
         sprintf(nonceStr, "%04u", currentSecurityNonce);

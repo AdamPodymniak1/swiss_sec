@@ -1,6 +1,6 @@
+// CborEngine.cpp
 #include "CborEngine.h"
 
-// Encodes definite-length CBOR primitives used in CTAP2 request and response maps.
 bool CborEncoder::writeUnsignedInt(uint64_t val) {
     if (offset >= capacity) return false;
 
@@ -105,7 +105,6 @@ bool CborEncoder::writeTextString(const char *text) {
     return true;
 }
 
-// Parser methods revert to the saved offset when a field shape does not match.
 bool CborParser::readTypeAndValue(uint8_t &majorType, uint64_t &value) {
     if (offset >= length) return false;
 
@@ -155,7 +154,7 @@ bool CborParser::readByteString(uint8_t *destBuffer, size_t maxLen, size_t &actu
         return false;
     }
 
-    if (strLen > maxLen || offset + strLen > length) {
+    if (strLen > maxLen || strLen > length - offset) {
         offset = savedOffset;
         return false;
     }
@@ -176,7 +175,7 @@ bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
         return false;
     }
 
-    if (strLen >= maxLen || offset + strLen > length) {
+    if (strLen > maxLen || strLen > length - offset) {
         offset = savedOffset;
         return false;
     }
@@ -187,8 +186,8 @@ bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
     return true;
 }
 
-// Unknown values are skipped recursively to tolerate optional browser-provided fields.
-bool CborParser::skipValue() {
+bool CborParser::skipValue(uint8_t depth) {
+    if (depth > MAX_CBOR_DEPTH) return false;
     if (offset >= length) return false;
 
     if (buffer[offset] == 0xFF) {
@@ -209,40 +208,42 @@ bool CborParser::skipValue() {
         case 3: 
             if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
-                    if (!skipValue()) return false;
+                    if (!skipValue(depth + 1)) return false;
                 }
                 if (offset >= length) return false;
                 offset++; 
                 return true;
             }
-            if (offset + value > length) return false;
+            if (value > length - offset) return false;
             offset += value;
             return true;
         case 4: 
             if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
-                    if (!skipValue()) return false;
+                    if (!skipValue(depth + 1)) return false;
                 }
                 if (offset >= length) return false;
                 offset++; 
                 return true;
             }
+            if (value > MAX_CBOR_ELEMENTS) return false;
             for (uint64_t i = 0; i < value; i++) {
-                if (!skipValue()) return false;
+                if (!skipValue(depth + 1)) return false;
             }
             return true;
         case 5: 
             if (value == 0xFFFFFFFFFFFFFFFFULL) { 
                 while (offset < length && buffer[offset] != 0xFF) {
-                    if (!skipValue()) return false; 
-                    if (!skipValue()) return false; 
+                    if (!skipValue(depth + 1)) return false; 
+                    if (!skipValue(depth + 1)) return false; 
                 }
                 if (offset >= length) return false;
                 offset++; 
                 return true;
             }
+            if (value > MAX_CBOR_ELEMENTS) return false;
             for (uint64_t i = 0; i < value * 2; i++) {
-                if (!skipValue()) return false;
+                if (!skipValue(depth + 1)) return false;
             }
             return true;
         default:

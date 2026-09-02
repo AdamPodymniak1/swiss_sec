@@ -1423,7 +1423,7 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
         ctapExpectedSeq++;
         uint16_t chunk = (ctapExpectedLen - ctapReceivedLen > 59) ? 59 : (ctapExpectedLen - ctapReceivedLen);
 
-        if (ctapReceivedLen + chunk > ctapBufferCapacity) {
+        if (ctapReceivedLen > ctapBufferCapacity || chunk > ctapBufferCapacity - ctapReceivedLen) {
             uint8_t err = 0x01; 
             sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
             ctapExpectedLen = 0; 
