@@ -218,6 +218,9 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
 
         savePasskeyRecord(khHex, appIdHex, "", "", privHex, -7);
 
+        memset(privKey, 0, sizeof(privKey));
+        secureWipe(privHex);
+
         uint8_t sigData[150];
         sigData[0] = 0x00;
         memcpy(sigData + 1, payload + 32, 32);

@@ -2,6 +2,7 @@
 #include "DisplayManager.h"
 #include "Globals.h"
 #include "CryptoManager.h"
+#include "StorageManager.h"
 
 HardwareSerial mySerial(1);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
@@ -124,7 +125,7 @@ void updateFingerprintAsync() {
         Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
         Terminal.flush();
 
-        pendingPasswordToTransmit = "";
+        secureWipe(pendingPasswordToTransmit);
         currentCommandState = STATE_READY;
 
         showDisplayMessage(1, "TRANSMITTED!", "", 0);
@@ -170,7 +171,7 @@ void updateFingerprintAsync() {
                     Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
                     Terminal.flush();
 
-                    pendingPasswordToTransmit = ""; 
+                    secureWipe(pendingPasswordToTransmit);
                     currentCommandState = STATE_READY;
 
                     showDisplayMessage(1, "TRANSMITTED!", "", 0);

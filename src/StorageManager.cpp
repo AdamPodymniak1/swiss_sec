@@ -861,3 +861,10 @@ bool deleteTotpSecret(const String &name) {
     
     return true;
 }
+
+void secureWipe(String &str) {
+    if (str.length() > 0) {
+        memset(const_cast<char*>(str.c_str()), 0, str.length());
+        str = "";
+    }
+}

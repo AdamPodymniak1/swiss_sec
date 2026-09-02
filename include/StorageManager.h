@@ -46,4 +46,6 @@ bool deleteTotpSecret(const String &name);
 void saveDefaultCryptoAlg(int algId);
 int loadDefaultCryptoAlg();
 
+void secureWipe(String &str);
+
 #endif

@@ -224,7 +224,8 @@ void cliTask(void *pvParameters) {
                     break;
                 case STATE_AWAITING_CREATE_VAL:
                     savePassword(pendingName, input);
-                    pendingName = "";
+                    secureWipe(pendingName);
+                    secureWipe(input);
                     currentCommandState = STATE_READY;
                     break;
                 case STATE_AWAITING_GET_NAME: {
@@ -273,7 +274,8 @@ void cliTask(void *pvParameters) {
                     break;
                 case STATE_AWAITING_TOTP_SECRET:
                     saveTotpSecret(pendingName, input);
-                    pendingName = "";
+                    secureWipe(pendingName);
+                    secureWipe(input);
                     currentCommandState = STATE_READY;
                     break;
                 case STATE_AWAITING_TOTP_GET: {
