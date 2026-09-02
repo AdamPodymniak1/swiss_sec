@@ -223,8 +223,8 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 ## Pending Roadmap & Future Tasks
 
 ### Hardware & Protocol Expansion
-* [ ] **Device Detection:** Implement automatic detection routines to verify when the ESP32-S3 is plugged in for browser plugin communication.
-* [ ] **Connection Broadcasting:** Broadcast FIDO2 connection status messages when requested by web applications.
+* [x] **Device Detection:** Implement automatic detection routines to verify when the ESP32-S3 is plugged in for browser plugin communication.
+* [x] **Connection Broadcasting:** Broadcast FIDO2 connection status messages when requested by web applications.
 * [ ] **Advanced CTAP2 Commands:**
   * [ ] Client PIN (Command `0x06`)
   * [ ] GetNextAssertion (Command `0x08`)
@@ -235,10 +235,10 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 * [ ] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
 
 ### Security Auditing & Hardening
-* [ ] **Biometric Replay Mitigation:** Implement countermeasures against fingerprint sensor replay attacks.
-* [ ] **OLED Bus Security:** Secure I2C/SPI communications against bus sniffing and spoofing.
-* [ ] **Nonce Security:** Ensure strict entropy separation to prevent AES-GCM nonce reuse vulnerabilities.
-* [ ] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
+* [x] **Biometric Replay Mitigation:** Implement countermeasures against fingerprint sensor replay attacks.
+* [x] **OLED Bus Security:** Secure I2C/SPI communications against bus sniffing and spoofing.
+* [x] **Nonce Security:** Ensure strict entropy separation to prevent AES-GCM nonce reuse vulnerabilities.
+* [x] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
 * [ ] **Credential Health Audit:** Implement security auditing for `/passwords.json` to flag weak, reused, or compromised passwords.
 
 ### Backup, Recovery, & Architecture
