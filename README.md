@@ -220,6 +220,13 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 * [x] **Autofill & Parsing:** Refined browser integration scripts, registration interception, login detection, and resolved intermittent auto-fill failure bugs.
 * [x] **Code Quality:** Comprehensive cleanup of inline documentation, comments, and project licensing for GitHub publication.
 
+### Security Auditing & Hardening
+* [x] **Biometric Replay Mitigation:** Implement countermeasures against fingerprint sensor replay attacks.
+* [x] **OLED Bus Security:** Secure I2C/SPI communications against bus sniffing and spoofing.
+* [x] **Nonce Security:** Ensure strict entropy separation to prevent AES-GCM nonce reuse vulnerabilities.
+* [x] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
+* [x] **Credential Health Audit:** Implement security auditing for `/passwords.json` to flag weak, reused, or compromised passwords.
+
 ## Pending Roadmap & Future Tasks
 
 ### Hardware & Protocol Expansion
@@ -234,14 +241,7 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 * [ ] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.
 * [ ] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
 
-### Security Auditing & Hardening
-* [x] **Biometric Replay Mitigation:** Implement countermeasures against fingerprint sensor replay attacks.
-* [x] **OLED Bus Security:** Secure I2C/SPI communications against bus sniffing and spoofing.
-* [x] **Nonce Security:** Ensure strict entropy separation to prevent AES-GCM nonce reuse vulnerabilities.
-* [x] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
-* [ ] **Credential Health Audit:** Implement security auditing for `/passwords.json` to flag weak, reused, or compromised passwords.
-
-### Backup, Recovery, & Architecture
+### Backup, Recovery, & Others
 * [ ] **Encrypted Backup Solutions:** Architect a secure, user-controlled export/import mechanism for offline backup and recovery.
 * [ ] **Technical Documentation:** Draft comprehensive technical documentation covering hardware schematics, firmware structure, and protocol flows.
 * [ ] **Mobile Companion Application:** Explore the feasibility of a companion mobile application for credential management.
