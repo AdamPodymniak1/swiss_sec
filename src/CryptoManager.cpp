@@ -10,6 +10,14 @@
 #include "mbedtls/error.h"
 #include "StorageManager.h"
 #include <Ed25519.h>
+#include <mbedtls/version.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/version.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/error.h>
+#include <mbedtls/asn1write.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 
 #define PBKDF2_ITERATIONS 10000
 #define HASH_SIZE 32
@@ -60,6 +68,7 @@ String toHex(const byte *data, size_t len) {
 
 void initCrypto() {
   Serial.println("[SYS] CRYPTO_INIT");
+  init_aes_nonce_subsystem();
   esp_fill_random(aesKey, sizeof(aesKey));
   encryptionActive = false;
 }
@@ -69,7 +78,8 @@ String encryptMsg(const String &plainText) {
   if (!encryptionActive) return plainText;
 
   byte iv[12];
-  esp_fill_random(iv, sizeof(iv));
+  generate_aes_gcm_nonce(iv);
+  //esp_fill_random(iv, sizeof(iv));
 
   size_t len = plainText.length();
   byte *cipher = (byte *)malloc(len);
@@ -269,7 +279,8 @@ String generateRandomPassword(size_t length) {
 // Vault and passkey payloads use a dedicated 256-bit wrapping key.
 String encryptStoragePayload(const String &plainText, const byte *key256) {
   byte iv[12];
-  esp_fill_random(iv, sizeof(iv));
+  generate_aes_gcm_nonce(iv);
+  //esp_fill_random(iv, sizeof(iv));
 
   size_t len = plainText.length();
   byte *cipher = (byte *)malloc(len);
@@ -359,9 +370,6 @@ String hashSHA256(const String &input) {
   return toHex(outputHash, 32);
 }
 
-#include <mbedtls/version.h>
-#include <mbedtls/ecdsa.h>
-
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000
     #define M_GRP MBEDTLS_PRIVATE(grp)
     #define M_D   MBEDTLS_PRIVATE(d)
@@ -401,11 +409,6 @@ bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65) {
     mbedtls_ecdsa_free(&ctx);
     return (ret == 0 && writtenLen == 65);
 }
-
-#include <mbedtls/version.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/error.h>
-#include <mbedtls/asn1write.h>
 
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000
     #define M_GRP MBEDTLS_PRIVATE(grp)
@@ -723,4 +726,48 @@ bool mldsa_sign(int algId, uint8_t* sigOut, size_t* sigLen, const uint8_t* hash,
     if (algId == -49) return PQCLEAN_MLDSA65_CLEAN_crypto_sign_signature(sigOut, sigLen, hash, hashLen, privKey) == 0;
     if (algId == -50) return PQCLEAN_MLDSA87_CLEAN_crypto_sign_signature(sigOut, sigLen, hash, hashLen, privKey) == 0;
     return false;
+}
+
+static uint32_t boot_counter = 0;
+static uint32_t session_counter = 0;
+static bool nonce_subsystem_initialized = false;
+
+void init_aes_nonce_subsystem() {
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err == ESP_OK) {
+        err = nvs_get_u32(my_handle, "boot_cnt", &boot_counter);
+        if (err == ESP_ERR_NVS_NOT_FOUND) boot_counter = 0;
+        
+        boot_counter++;
+        nvs_set_u32(my_handle, "boot_cnt", boot_counter);
+        nvs_commit(my_handle);
+        nvs_close(my_handle);
+        
+        nonce_subsystem_initialized = true;
+    }
+}
+
+void generate_aes_gcm_nonce(byte *nonce_out) {
+    if (!nonce_subsystem_initialized) abort(); // Failsafe against NVS failure
+    
+    // Byte 0-3: NVS Boot Epoch
+    nonce_out[0] = (boot_counter >> 24) & 0xFF;
+    nonce_out[1] = (boot_counter >> 16) & 0xFF;
+    nonce_out[2] = (boot_counter >> 8) & 0xFF;
+    nonce_out[3] = boot_counter & 0xFF;
+    
+    // Byte 4-7: RAM Session Counter
+    session_counter++;
+    nonce_out[4] = (session_counter >> 24) & 0xFF;
+    nonce_out[5] = (session_counter >> 16) & 0xFF;
+    nonce_out[6] = (session_counter >> 8) & 0xFF;
+    nonce_out[7] = session_counter & 0xFF;
+    
+    // Byte 8-11: Hardware TRNG Padding
+    uint32_t rand_pad = esp_random();
+    nonce_out[8] = (rand_pad >> 24) & 0xFF;
+    nonce_out[9] = (rand_pad >> 16) & 0xFF;
+    nonce_out[10] = (rand_pad >> 8) & 0xFF;
+    nonce_out[11] = rand_pad & 0xFF;
 }

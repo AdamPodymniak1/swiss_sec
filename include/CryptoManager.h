@@ -50,4 +50,8 @@ String generateTOTP(const String& base32Secret, uint32_t unixTime);
 
 void getFidoHardwareKey(byte *outKey256);
 
+void init_aes_nonce_subsystem();
+void generate_aes_gcm_nonce(byte *nonce_out);
+
+
 #endif
