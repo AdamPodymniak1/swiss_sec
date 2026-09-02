@@ -12,3 +12,4 @@ SemaphoreHandle_t storageMutex = NULL;
 QueueHandle_t cryptoQueue = NULL;
 
 int defaultCryptoAlg = -7;
+uint16_t lastConfidenceScore = 0;

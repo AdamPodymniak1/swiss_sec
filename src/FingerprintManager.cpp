@@ -152,10 +152,17 @@ void updateFingerprintAsync() {
             xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
             uint8_t searchResult = finger.fingerSearch();
             uint8_t matchedID = finger.fingerID;
-            uint8_t matchConfidence = finger.confidence;
+            uint16_t matchConfidence = finger.confidence;
             xSemaphoreGive(fingerprintMutex);
 
             if (searchResult == FINGERPRINT_OK) {
+                if (matchConfidence == lastConfidenceScore && matchConfidence > 0) {
+                    showDisplayMessage(1, "REPLAY DETECTED", "", 2000);
+                    currentCommandState = STATE_READY;
+                    return;
+                }
+                lastConfidenceScore = matchConfidence;
+
                 if (matchConfidence > 50) { 
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 

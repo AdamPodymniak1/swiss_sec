@@ -74,6 +74,11 @@ bool fidoVerifyFingerprint() {
         xSemaphoreGive(fingerprintMutex);
         return false;
     }
+    if (finger.confidence == lastConfidenceScore && finger.confidence > 0) {
+        xSemaphoreGive(fingerprintMutex);
+        return false;
+    }
+    lastConfidenceScore = finger.confidence;
     bool result = finger.confidence > 50;
     xSemaphoreGive(fingerprintMutex);
     return result;

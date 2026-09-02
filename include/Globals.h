@@ -46,5 +46,6 @@ extern SemaphoreHandle_t storageMutex;
 extern QueueHandle_t cryptoQueue;
 
 extern int defaultCryptoAlg;
+extern uint16_t lastConfidenceScore;
 
 #endif
