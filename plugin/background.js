@@ -36,19 +36,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         }
 
         if (messageType) {
-            chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
-                if (tabs.length > 0) {
-                    chrome.tabs.sendMessage(tabs[0].id, {
-                        target: "dashboard",
-                        type: messageType,
-                        hostname: domain,
-                        senderTabId: tab.id
-                    });
-                } else {
-                    if (chrome.action.openPopup) {
-                        chrome.action.openPopup().catch(() => {});
-                    }
-                }
+            chrome.tabs.sendMessage(tab.id, {
+                type: "ASK_LOGIN_THEN_ACTION",
+                action: messageType,
+                domain: domain
+            }).catch(() => {
+                if (chrome.action.openPopup) chrome.action.openPopup().catch(() => {});
             });
         }
     } catch(e) {}
@@ -72,11 +65,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             chrome.tabs.query({ url: chrome.runtime.getURL("dashboard.html") }, (tabs) => {
                 if (tabs.length > 0) {
                     chrome.tabs.sendMessage(tabs[0].id, message, (response) => {
-                        if (chrome.runtime.lastError) {
-                            sendResponse(null);
-                        } else {
-                            sendResponse(response);
-                        }
+                        if (chrome.runtime.lastError) sendResponse(null);
+                        else sendResponse(response);
                     });
                 } else {
                     sendResponse(null);

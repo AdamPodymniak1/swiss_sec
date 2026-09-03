@@ -297,7 +297,7 @@ void listPasswords() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     if (!SPIFFS.exists("/passwords.json")) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[PASS] OUT:EMPTY");
+        Terminal.println("[PASS] LIST:EMPTY");
         return;
     }
     File file = SPIFFS.open("/passwords.json", "r");
@@ -368,7 +368,7 @@ void listPasswords() {
             passwords[i] = "";
         }
     }
-    Terminal.println("[PASS] OUT:LIST_END");
+    Terminal.println("[PASS] LIST:LIST_END");
 }
 
 void showStorageInfo() {

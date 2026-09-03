@@ -63,6 +63,9 @@
         .test-pass { color: #00ff00; }
         .test-fail { color: #ff3333; }
         select { width: 100%; padding: 7px; margin-bottom: 8px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; font-size: 12px; }
+
+        .add-row input { margin-bottom: 0; width: 100%; font-size: 11px; flex: 1; min-width: 0; }
+        .add-row button { margin-bottom: 0; width: 45px; background: #006666; border-color: #008888; padding: 6px; font-size: 11px; flex-shrink: 0; }
     </style>
 </head>
 <body>
@@ -99,8 +102,9 @@
                 <button id="btnListPass" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
             </div>
             <div class="add-row">
-                <input type="text" id="newPassName" placeholder="Site / Name (e.g. github.com)">
-                <input type="password" id="newPassValue" placeholder="Blank for auto-gen">
+                <input type="text" id="newPassName" placeholder="Site">
+                <input type="text" id="newPassLogin" placeholder="Login">
+                <input type="password" id="newPassValue" placeholder="Pass (opt)">
                 <button id="btnCreatePass">Add</button>
             </div>
             <ul id="passVisual" class="data-list"></ul>

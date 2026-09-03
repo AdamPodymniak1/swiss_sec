@@ -7,7 +7,6 @@ let pendingAutoGenerate = null;
 let pendingGetPassword = null;
 let pendingDeleteTotpName = null;
 
-// Tracks multi-step firmware interactions and pending confirmations.
 let pendingGetFidoDomain = null;
 let pendingDeletePassName = null;
 let pendingDeleteFidoDomain = null;
@@ -43,21 +42,10 @@ function hexToBuffer(hex) {
 
 window.addEventListener('DOMContentLoaded', async () => {
     const ports = await navigator.serial.getPorts();
-    if (ports.length > 0) {
-        await connect();
-    }
+    if (ports.length > 0) await connect();
 
-    navigator.serial.addEventListener('connect', async () => {
-        if (!isConnected) {
-            await connect();
-        }
-    });
-
-    navigator.serial.addEventListener('disconnect', async () => {
-        if (isConnected) {
-            await disconnect();
-        }
-    });
+    navigator.serial.addEventListener('connect', async () => { if (!isConnected) await connect(); });
+    navigator.serial.addEventListener('disconnect', async () => { if (isConnected) await disconnect(); });
 });
 
 connectBtn.onclick = async () => {
@@ -68,11 +56,8 @@ connectBtn.onclick = async () => {
 async function connect() {
     try {
         const ports = await navigator.serial.getPorts();
-        if (ports.length > 0) {
-            port = ports[0];
-        } else {
-            port = await navigator.serial.requestPort();
-        }
+        if (ports.length > 0) port = ports[0];
+        else port = await navigator.serial.requestPort();
         
         await port.open({ baudRate: 115200 });
         
@@ -129,18 +114,21 @@ function processIncomingLine(text) {
     else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
     else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
 
-    // Handle automatic password creation and retrieval flows.
     if (pendingAutoGenerate) {
-        if (text.includes("[PASS] REQ:NAME")) {
+        if (text.includes("[PASS] REQ:WEBSITE")) {
             sendSecure(pendingAutoGenerate.domain);
+        } else if (text.includes("[PASS] REQ:LOGIN")) {
+            sendSecure(pendingAutoGenerate.login);
         } else if (text.includes("[PASS] AUTO_GENERATE_PASSWORD?")) {
             sendSecure("Y");
         }
     }
 
     if (pendingGetPassword) {
-        if (text.includes("[PASS] REQ:NAME")) {
+        if (text.includes("[PASS] REQ:WEBSITE")) {
             sendSecure(pendingGetPassword.domain);
+        } else if (text.includes("[PASS] REQ:LOGIN")) {
+            sendSecure(pendingGetPassword.login);
         } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
             terminal.innerText += `[System] No password found\n`;
             pendingGetPassword = null;
@@ -148,36 +136,10 @@ function processIncomingLine(text) {
         }
     }
 
-    // Parse interactive CLI prompts that require a follow-up value.
     if (text.includes("[FIDO2] REQ:WEBSITE_DOMAIN")) {
         if (pendingGetFidoDomain) {
             sendSecure(pendingGetFidoDomain);
             pendingGetFidoDomain = null;
-        }
-    }
-
-    // Handle delete confirmation and not-found responses.
-    if (text.includes("[PASS] OUT:DELETED")) {
-        const deletedIdentifier = pendingDeletePassName || pendingDeleteFidoDomain || "item";
-        const category = pendingDeletePassName ? "pass" : "fido";
-
-        chrome.runtime.sendMessage({
-            target: "popup",
-            type: "DELETE_CONFIRMED",
-            category: category,
-            identifier: deletedIdentifier
-        }).catch(() => {});
-
-        pendingDeletePassName = null;
-        pendingDeleteFidoDomain = null;
-    } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
-        if (pendingDeletePassName || pendingDeleteFidoDomain) {
-            chrome.runtime.sendMessage({
-                target: "popup",
-                type: "DELETE_FAILED"
-            }).catch(() => {});
-            pendingDeletePassName = null;
-            pendingDeleteFidoDomain = null;
         }
     }
 
@@ -202,22 +164,14 @@ function processIncomingLine(text) {
         else if (pendingDeleteFidoDomain) category = "fido";
         else if (pendingDeleteTotpName) category = "totp";
 
-        chrome.runtime.sendMessage({
-            target: "popup",
-            type: "DELETE_CONFIRMED",
-            category: category,
-            identifier: deletedIdentifier
-        }).catch(() => {});
+        chrome.runtime.sendMessage({ target: "popup", type: "DELETE_CONFIRMED", category: category, identifier: deletedIdentifier }).catch(() => {});
 
         pendingDeletePassName = null;
         pendingDeleteFidoDomain = null;
         pendingDeleteTotpName = null;
     } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
         if (pendingDeletePassName || pendingDeleteFidoDomain || pendingDeleteTotpName) {
-            chrome.runtime.sendMessage({
-                target: "popup",
-                type: "DELETE_FAILED"
-            }).catch(() => {});
+            chrome.runtime.sendMessage({ target: "popup", type: "DELETE_FAILED" }).catch(() => {});
             pendingDeletePassName = null;
             pendingDeleteFidoDomain = null;
             pendingDeleteTotpName = null;
@@ -225,24 +179,19 @@ function processIncomingLine(text) {
     }
 
     if (passwordValue) {
-        const targetTabId = pendingGetPassword ? pendingGetPassword.tabId : (pendingAutoGenerate ? pendingAutoGenerate.tabId : null);
+        const targetObj = pendingGetPassword || pendingAutoGenerate;
+        const targetTabId = targetObj ? targetObj.tabId : null;
+        const targetLogin = targetObj ? targetObj.login : null;
+        
         pendingAutoGenerate = null;
         pendingGetPassword = null;
         setAuthState("READY");
 
         if (targetTabId) {
-            chrome.tabs.sendMessage(targetTabId, {
-                type: "FILL_CREDENTIALS",
-                password: passwordValue
-            }).catch(() => {});
+            chrome.tabs.sendMessage(targetTabId, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
         } else {
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                if (tabs.length > 0) {
-                    chrome.tabs.sendMessage(tabs[0].id, {
-                        type: "FILL_CREDENTIALS",
-                        password: passwordValue
-                    }).catch(() => {});
-                }
+                if (tabs.length > 0) chrome.tabs.sendMessage(tabs[0].id, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
             });
         }
     }
@@ -250,12 +199,7 @@ function processIncomingLine(text) {
     terminal.innerText += safeText + "\n";
     terminal.scrollTop = terminal.scrollHeight;
 
-    // Relay output to Popup Dashboard Console
-    chrome.runtime.sendMessage({
-        target: "popup",
-        type: "SERIAL_OUTPUT",
-        text: safeText
-    }).catch(() => {});
+    chrome.runtime.sendMessage({ target: "popup", type: "SERIAL_OUTPUT", text: safeText }).catch(() => {});
 }
 
 async function readLoop() {
@@ -355,9 +299,7 @@ const handleSendAction = async () => {
 };
 
 document.getElementById('sendBtn').onclick = handleSendAction;
-inputField.addEventListener("keyup", async (event) => {
-    if (event.key === "Enter") await handleSendAction();
-});
+inputField.addEventListener("keyup", async (event) => { if (event.key === "Enter") await handleSendAction(); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "PING") {
@@ -366,18 +308,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: "ok" });
     } else if (message.type === "AUTO_GENERATE") {
         if (isConnected && authState === "READY") {
+            if (pendingAutoGenerate) return sendResponse({ status: "busy" }); // PREVENT DOUBLE FIRING
             pendingAutoGenerate = { 
                 domain: message.hostname, 
-                tabId: message.senderTabId 
+                login: message.login,
+                tabId: message.senderTabId || (sender.tab && sender.tab.id)
             };
             sendSecure("create");
         }
         sendResponse({ status: "ok" });
     } else if (message.type === "GET_PASSWORD") {
         if (isConnected && authState === "READY") {
+            if (pendingGetPassword) return sendResponse({ status: "busy" }); // PREVENT DOUBLE FIRING
             pendingGetPassword = {
                 domain: message.hostname,
-                tabId: message.senderTabId
+                login: message.login,
+                tabId: message.senderTabId || (sender.tab && sender.tab.id)
             };
             sendSecure("get");
         }
@@ -397,11 +343,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_DELETE_PASS") {
         pendingDeletePassName = message.name;
-        terminal.innerText += "[System] Deleting password for " + message.name + "\n";
+        terminal.innerText += "[System] Deleting password for " + message.name + " (" + message.login + ")\n";
         
         (async () => {
             await sendSecure("delete");
-            await sendSecure(pendingDeletePassName);
+            await new Promise(r => setTimeout(r, 100));
+            await sendSecure(message.name);
+            await new Promise(r => setTimeout(r, 100));
+            await sendSecure(message.login);
             sendResponse({ status: "ok" });
         })();
         return true; 
@@ -409,9 +358,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "CMD_DELETE_FIDO") {
         pendingDeleteFidoDomain = message.domain;
         terminal.innerText += "[System] Deleting FIDO key for " + message.domain + "\n";
-        
         (async () => {
             await sendSecure("delete_fido");
+            await new Promise(r => setTimeout(r, 100));
             await sendSecure(pendingDeleteFidoDomain);
             sendResponse({ status: "ok" });
         })();
@@ -429,9 +378,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === "CMD_DELETE_TOTP") {
         pendingDeleteTotpName = message.name;
         terminal.innerText += "[System] Deleting TOTP for " + message.name + "\n";
-        
         (async () => {
             await sendSecure("totp_delete");
+            await new Promise(r => setTimeout(r, 100));
             await sendSecure(pendingDeleteTotpName);
             sendResponse({ status: "ok" });
         })();
