@@ -73,14 +73,14 @@ bool testCryptoSubsystem() {
 
 bool testStorageSubsystem() {
     bool allPassed = true;
-
     bool initialPinSet = isPinSet();
 
+    String mockWebsite = "test_mock_site.com";
     String mockAccount = "test_mock_user_123";
     String mockSecret = "SuperSecurePassword99!";
 
-    savePassword(mockAccount, mockSecret);
-    String retrievedSecret = getPasswordFromStorage(mockAccount);
+    savePassword(mockWebsite, mockAccount, mockSecret);
+    String retrievedSecret = getPasswordFromStorage(mockWebsite, mockAccount);
 
     if (retrievedSecret != mockSecret) {
         printTestResult("Storage: Vault Data Read/Write Integrity", false);
@@ -89,8 +89,8 @@ bool testStorageSubsystem() {
         printTestResult("Storage: Vault Data Read/Write Integrity", true);
     }
 
-    deletePassword(mockAccount);
-    if (getPasswordFromStorage(mockAccount).length() != 0) {
+    deletePassword(mockWebsite, mockAccount);
+    if (getPasswordFromStorage(mockWebsite, mockAccount).length() != 0) {
         printTestResult("Storage: Vault Single Node Erasure", false);
         allPassed = false;
     } else {

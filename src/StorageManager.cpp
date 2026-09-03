@@ -173,7 +173,7 @@ bool verifyPin(const String &pin) {
     }
 }
 
-bool isPasswordExists(const String &name) {
+bool isPasswordExists(const String &website, const String &login) {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     if (!SPIFFS.exists("/passwords.json")) {
         xSemaphoreGive(storageMutex);
@@ -188,14 +188,14 @@ bool isPasswordExists(const String &name) {
     DeserializationError error = deserializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    return !error && doc[name].is<JsonVariant>();
+    return !error && doc[website].is<JsonObject>() && doc[website][login].is<JsonVariant>();
 }
 
-void savePassword(const String &name, const String &password) {
+void savePassword(const String &website, const String &login, const String &password) {
     if (!isStorageKeyLoaded) { Terminal.println("[ERR] CODE:STORAGE_KEY_LOCKED"); return; }
-    if (name.length() > 32) { Terminal.println("[ERR] CODE:NAME_TOO_LONG"); return; }
+    if (website.length() > 64 || login.length() > 64) { Terminal.println("[ERR] CODE:IDENTIFIER_TOO_LONG"); return; }
     if (password.length() > 4000) { Terminal.println("[ERR] CODE:PASS_TOO_LONG"); return; }
-    if (isPasswordExists(name)) { Terminal.println("[ERR] CODE:ALREADY_EXISTS"); return; }
+    if (isPasswordExists(website, login)) { Terminal.println("[ERR] CODE:ALREADY_EXISTS"); return; }
 
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     JsonDocument doc;
@@ -207,8 +207,11 @@ void savePassword(const String &name, const String &password) {
         }
     }
 
-    JsonObject obj = doc.as<JsonObject>();
-    if (obj.size() >= 1000) {
+    int totalLogins = 0;
+    for (JsonPair sitePair : doc.as<JsonObject>()) {
+        totalLogins += sitePair.value().as<JsonObject>().size();
+    }
+    if (totalLogins >= 1000) {
         xSemaphoreGive(storageMutex);
         Terminal.println("[ERR] CODE:MAX_LIMIT_REACHED");
         return;
@@ -221,7 +224,9 @@ void savePassword(const String &name, const String &password) {
         return;
     }
 
-    doc[name] = encryptedValue;
+    JsonObject siteObj = doc[website].is<JsonObject>() ? doc[website].as<JsonObject>() : doc[website].to<JsonObject>();
+    siteObj[login] = encryptedValue;
+
     File file = SPIFFS.open("/passwords.json", "w");
     if (!file) {
         xSemaphoreGive(storageMutex);
@@ -234,7 +239,7 @@ void savePassword(const String &name, const String &password) {
     Terminal.println("[PASS] OUT:SAVED");
 }
 
-String getPasswordFromStorage(const String &name) {
+String getPasswordFromStorage(const String &website, const String &login) {
     if (!isStorageKeyLoaded) return "";
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     File file = SPIFFS.open("/passwords.json", "r");
@@ -247,12 +252,12 @@ String getPasswordFromStorage(const String &name) {
     file.close();
     xSemaphoreGive(storageMutex);
 
-    if (!doc[name].is<JsonVariant>()) return "";
-    String encryptedValue = doc[name].as<String>();
+    if (!doc[website].is<JsonObject>() || !doc[website][login].is<JsonVariant>()) return "";
+    String encryptedValue = doc[website][login].as<String>();
     return decryptStoragePayload(encryptedValue, storageKey);
 }
 
-bool deletePassword(const String &name) {
+bool deletePassword(const String &website, const String &login) {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     if (!SPIFFS.exists("/passwords.json")) {
         xSemaphoreGive(storageMutex);
@@ -267,11 +272,15 @@ bool deletePassword(const String &name) {
     deserializeJson(doc, file);
     file.close();
 
-    if (!doc[name].is<JsonVariant>()) {
+    if (!doc[website].is<JsonObject>() || !doc[website][login].is<JsonVariant>()) {
         xSemaphoreGive(storageMutex);
         return false;
     }
-    doc.remove(name);
+    
+    doc[website].as<JsonObject>().remove(login);
+    if (doc[website].as<JsonObject>().size() == 0) {
+        doc.remove(website);
+    }
 
     file = SPIFFS.open("/passwords.json", "w");
     if (!file) {
@@ -307,31 +316,28 @@ void listPasswords() {
         return;
     }
 
-    JsonObject obj = doc.as<JsonObject>();
+    std::vector<String> websites;
+    std::vector<String> logins;
     std::vector<String> passwords;
-    std::vector<String> names;
 
-    for (JsonPair pair : obj) {
-        String name = pair.key().c_str();
-        String encryptedValue = pair.value().as<String>();
-        String decrypted = decryptStoragePayload(encryptedValue, storageKey);
-        names.push_back(name);
-        passwords.push_back(decrypted);
+    for (JsonPair sitePair : doc.as<JsonObject>()) {
+        String website = sitePair.key().c_str();
+        JsonObject lgs = sitePair.value().as<JsonObject>();
+        for (JsonPair loginPair : lgs) {
+            websites.push_back(website);
+            logins.push_back(loginPair.key().c_str());
+            passwords.push_back(decryptStoragePayload(loginPair.value().as<String>(), storageKey));
+        }
     }
 
-    for (size_t i = 0; i < names.size(); i++) {
-        String name = names[i];
+    for (size_t i = 0; i < websites.size(); i++) {
         String pwd = passwords[i];
         bool isWeak = false;
 
         if (pwd.length() < 12) {
             isWeak = true;
         } else {
-            bool hasNum = false;
-            bool hasUpper = false;
-            bool hasLower = false;
-            bool hasSpec = false;
-            
+            bool hasNum = false, hasUpper = false, hasLower = false, hasSpec = false;
             for (int c = 0; c < pwd.length(); c++) {
                 char ch = pwd[c];
                 if (isdigit(ch)) hasNum = true;
@@ -339,28 +345,21 @@ void listPasswords() {
                 else if (islower(ch)) hasLower = true;
                 else hasSpec = true;
             }
-            if (!hasNum || !hasUpper || !hasLower || !hasSpec) {
-                isWeak = true;
-            }
+            if (!hasNum || !hasUpper || !hasLower || !hasSpec) isWeak = true;
         }
 
         int freq = 0;
         for (size_t j = 0; j < passwords.size(); j++) {
-            if (passwords[j] == pwd) {
-                freq++;
-            }
+            if (passwords[j] == pwd) freq++;
         }
-        if (freq > 1) {
-            isWeak = true;
-        }
+        if (freq > 1) isWeak = true;
 
         Terminal.print("[PASS] ITEM:");
-        Terminal.print(name);
-        if (isWeak) {
-            Terminal.println("|WEAK");
-        } else {
-            Terminal.println("|OK");
-        }
+        Terminal.print(websites[i]);
+        Terminal.print("|");
+        Terminal.print(logins[i]);
+        if (isWeak) Terminal.println("|WEAK");
+        else Terminal.println("|OK");
     }
 
     for (size_t i = 0; i < passwords.size(); i++) {
@@ -369,7 +368,6 @@ void listPasswords() {
             passwords[i] = "";
         }
     }
-
     Terminal.println("[PASS] OUT:LIST_END");
 }
 
@@ -385,10 +383,12 @@ void showStorageInfo() {
         File file = SPIFFS.open("/passwords.json", "r");
         JsonDocument doc;
         if (!deserializeJson(doc, file)) {
-            JsonObject obj = doc.as<JsonObject>();
-            for (JsonPair pair : obj) {
-                count++;
-                chars += String(pair.value().as<const char *>()).length();
+            for (JsonPair sitePair : doc.as<JsonObject>()) {
+                JsonObject lgs = sitePair.value().as<JsonObject>();
+                for (JsonPair loginPair : lgs) {
+                    count++;
+                    chars += String(loginPair.value().as<const char *>()).length();
+                }
             }
             if (count > 0) avg = (float)chars / count;
         }

@@ -18,10 +18,10 @@ void resetFailedPinAttempts();
 
 void factoryResetSystem();
 
-bool isPasswordExists(const String &name);
-void savePassword(const String &name, const String &password);
-String getPasswordFromStorage(const String &name);
-bool deletePassword(const String &name);
+bool isPasswordExists(const String &website, const String &login);
+void savePassword(const String &website, const String &login, const String &password);
+String getPasswordFromStorage(const String &website, const String &login);
+bool deletePassword(const String &website, const String &login);
 void listPasswords();
 void showStorageInfo();
 bool deletePin();

@@ -1,7 +1,8 @@
 #include "Globals.h"
 
 SystemState currentCommandState = STATE_READY;
-String pendingName = "";
+String pendingWebsite = "";
+String pendingLogin = "";
 bool authenticated = false;
 String pendingPasswordToTransmit = "";
 

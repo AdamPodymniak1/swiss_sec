@@ -117,14 +117,14 @@ void cliTask(void *pvParameters) {
                         Terminal.println("  register_finger - Register a new fingerprint for hardware approval");
                         Terminal.println("====================================================");
                     } else if (input == "create") {
-                        Terminal.println("[PASS] REQ:NAME");
-                        currentCommandState = STATE_AWAITING_CREATE_NAME;
+                        Terminal.println("[PASS] REQ:WEBSITE");
+                        currentCommandState = STATE_AWAITING_CREATE_WEBSITE;
                     } else if (input == "get") {
-                        Terminal.println("[PASS] REQ:NAME");
-                        currentCommandState = STATE_AWAITING_GET_NAME;
+                        Terminal.println("[PASS] REQ:WEBSITE");
+                        currentCommandState = STATE_AWAITING_GET_WEBSITE;
                     } else if (input == "delete") {
-                        Terminal.println("[PASS] REQ:NAME");
-                        currentCommandState = STATE_AWAITING_DELETE_NAME;
+                        Terminal.println("[PASS] REQ:WEBSITE");
+                        currentCommandState = STATE_AWAITING_DELETE_WEBSITE;
                     } else if (input == "list") {
                         listPasswords();
                     } else if (input == "info") {
@@ -192,28 +192,42 @@ void cliTask(void *pvParameters) {
                     } else if (input == "totp_delete") {
                         Terminal.println("[TOTP] REQ:NAME");
                         currentCommandState = STATE_AWAITING_TOTP_DELETE_NAME;
-                    }else {
+                    } else {
                         Terminal.println("[ERR] CODE:UNKNOWN_CMD");
                     }
                     break;
-                case STATE_AWAITING_CREATE_NAME:
+
+                case STATE_AWAITING_CREATE_WEBSITE:
                     if (input.length() == 0) {
-                        Terminal.println("[ERR] CODE:INVALID_NAME");
+                        Terminal.println("[ERR] CODE:INVALID_WEBSITE");
                         currentCommandState = STATE_READY;
                         break;
                     }
-                    pendingName = input;
+                    pendingWebsite = input;
+                    Terminal.println("[PASS] REQ:LOGIN");
+                    currentCommandState = STATE_AWAITING_CREATE_LOGIN;
+                    break;
+
+                case STATE_AWAITING_CREATE_LOGIN:
+                    if (input.length() == 0) {
+                        Terminal.println("[ERR] CODE:INVALID_LOGIN");
+                        currentCommandState = STATE_READY;
+                        break;
+                    }
+                    pendingLogin = input;
                     Terminal.println("[PASS] AUTO_GENERATE_PASSWORD? (Y/N)");
                     currentCommandState = STATE_AWAITING_AUTOGEN_CHOICE;
                     break;
+
                 case STATE_AWAITING_AUTOGEN_CHOICE:
                     input.toUpperCase();
                     if (input == "Y" || input == "YES") {
                         String generatedPass = generateRandomPassword(16);
-                        savePassword(pendingName, generatedPass);
+                        savePassword(pendingWebsite, pendingLogin, generatedPass);
                         Terminal.print("[PASS] GENERATED:");
                         Terminal.println(generatedPass);
-                        pendingName = "";
+                        pendingWebsite = "";
+                        pendingLogin = "";
                         currentCommandState = STATE_READY;
                     } else if (input == "N" || input == "NO") {
                         Terminal.println("[PASS] REQ:VAL");
@@ -222,17 +236,26 @@ void cliTask(void *pvParameters) {
                         Terminal.println("[ERR] CODE:INVALID_CHOICE_ENTER_Y_OR_N");
                     }
                     break;
+
                 case STATE_AWAITING_CREATE_VAL:
-                    savePassword(pendingName, input);
-                    secureWipe(pendingName);
+                    savePassword(pendingWebsite, pendingLogin, input);
+                    secureWipe(pendingWebsite);
+                    secureWipe(pendingLogin);
                     secureWipe(input);
                     currentCommandState = STATE_READY;
                     break;
-                case STATE_AWAITING_GET_NAME: {
-                    String pw = getPasswordFromStorage(input);
+
+                case STATE_AWAITING_GET_WEBSITE:
+                    pendingWebsite = input;
+                    Terminal.println("[PASS] REQ:LOGIN");
+                    currentCommandState = STATE_AWAITING_GET_LOGIN;
+                    break;
+
+                case STATE_AWAITING_GET_LOGIN: {
+                    String pw = getPasswordFromStorage(pendingWebsite, input);
                     if (pw.length() > 0) {
                         pendingPasswordToTransmit = pw;
-                        showDisplayMessage(2, "GETTING:", input, 0);
+                        showDisplayMessage(2, "GETTING:", pendingWebsite, 0);
                         Terminal.println("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL");
                         currentCommandState = STATE_AWAITING_FINGERPRINT;
                     } else {
@@ -241,14 +264,22 @@ void cliTask(void *pvParameters) {
                     }
                     break;
                 }
-                case STATE_AWAITING_DELETE_NAME:
-                    if (deletePassword(input)) {
+
+                case STATE_AWAITING_DELETE_WEBSITE:
+                    pendingWebsite = input;
+                    Terminal.println("[PASS] REQ:LOGIN");
+                    currentCommandState = STATE_AWAITING_DELETE_LOGIN;
+                    break;
+
+                case STATE_AWAITING_DELETE_LOGIN:
+                    if (deletePassword(pendingWebsite, input)) {
                         Terminal.println("[PASS] OUT:DELETED");
                     } else {
                         Terminal.println("[ERR] CODE:NOT_FOUND");
                     }
                     currentCommandState = STATE_READY;
                     break;
+
                 case STATE_AWAITING_FIDO_GET_NAME: {
                     String info = getFidoWebsiteInfo(input);
                     if (info.length() > 0) {
@@ -259,6 +290,7 @@ void cliTask(void *pvParameters) {
                     currentCommandState = STATE_READY;
                     break;
                 }
+
                 case STATE_AWAITING_FIDO_DELETE_NAME:
                     if (deleteFidoWebsite(input)) {
                         Terminal.println("[PASS] OUT:DELETED");
@@ -267,17 +299,20 @@ void cliTask(void *pvParameters) {
                     }
                     currentCommandState = STATE_READY;
                     break;
+
                 case STATE_AWAITING_TOTP_NAME:
-                    pendingName = input;
+                    pendingWebsite = input;
                     Terminal.println("[TOTP] REQ:BASE32_SECRET");
                     currentCommandState = STATE_AWAITING_TOTP_SECRET;
                     break;
+
                 case STATE_AWAITING_TOTP_SECRET:
-                    saveTotpSecret(pendingName, input);
-                    secureWipe(pendingName);
+                    saveTotpSecret(pendingWebsite, input);
+                    secureWipe(pendingWebsite);
                     secureWipe(input);
                     currentCommandState = STATE_READY;
                     break;
+
                 case STATE_AWAITING_TOTP_GET: {
                     String secret = getTotpSecret(input);
                     if (secret.length() > 0) {
@@ -293,6 +328,7 @@ void cliTask(void *pvParameters) {
                     currentCommandState = STATE_READY;
                     break;
                 }
+
                 case STATE_AWAITING_CRYPTO_ALG: {
                     int newAlg = input.toInt();
                     if (newAlg == -7 || newAlg == -8 || newAlg == -257 || newAlg == -48 || newAlg == -49 || newAlg == -50) {
@@ -306,6 +342,7 @@ void cliTask(void *pvParameters) {
                     currentCommandState = STATE_READY;
                     break;
                 }
+
                 case STATE_AWAITING_TOTP_DELETE_NAME:
                     if (deleteTotpSecret(input)) {
                         Terminal.println("[TOTP] OUT:DELETED");
@@ -314,6 +351,7 @@ void cliTask(void *pvParameters) {
                     }
                     currentCommandState = STATE_READY;
                     break;
+
                 default:
                     currentCommandState = STATE_READY;
                     break;
