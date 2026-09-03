@@ -116,11 +116,25 @@ bool enrollFingerprint(uint8_t id) {
 }
 
 void updateFingerprintAsync() {
-    if (currentCommandState != STATE_AWAITING_FINGERPRINT) return;
+    if (currentCommandState != STATE_AWAITING_FINGERPRINT && currentCommandState != STATE_AWAITING_FINGERPRINT_UPDATE) return;
 
 #if USE_FINGERPRINT_SIMULATOR
     if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
         while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(50 / portTICK_PERIOD_MS); }
+        if (currentCommandState == STATE_AWAITING_FINGERPRINT_UPDATE) {
+            deletePassword(pendingWebsite, pendingLogin);
+            if (savePassword(pendingWebsite, pendingLogin, pendingPasswordToSave)) {
+                CommsManager::sendEvent("PASS", "UPDATED");
+                showDisplayMessage(1, "UPDATED!", "", 2000);
+            } else {
+                CommsManager::sendError("PASS", "UPDATE_FAILED");
+            }
+            secureWipe(pendingWebsite);
+            secureWipe(pendingLogin);
+            secureWipe(pendingPasswordToSave);
+            currentCommandState = STATE_READY;
+            return;
+        }
         String challengeNonce = generateRandomPassword(16);
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
@@ -169,7 +183,22 @@ void updateFingerprintAsync() {
                 }
                 lastConfidenceScore = matchConfidence;
 
-                if (matchConfidence > 50) { 
+                if (matchConfidence > 50) {
+                    if (currentCommandState == STATE_AWAITING_FINGERPRINT_UPDATE) {
+                        deletePassword(pendingWebsite, pendingLogin);
+                        if (savePassword(pendingWebsite, pendingLogin, pendingPasswordToSave)) {
+                            CommsManager::sendEvent("PASS", "UPDATED");
+                            showDisplayMessage(1, "UPDATED!", "", 2000);
+                        } else {
+                            CommsManager::sendError("PASS", "UPDATE_FAILED");
+                        }
+                        secureWipe(pendingWebsite);
+                        secureWipe(pendingLogin);
+                        secureWipe(pendingPasswordToSave);
+                        currentCommandState = STATE_READY;
+                        return;
+                    }
+                    
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 
 

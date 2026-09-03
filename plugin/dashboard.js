@@ -133,6 +133,8 @@ function processIncomingLine(text) {
                     pendingAutoGenerate = null;
                     fillCredentialsInTab(targetObj, passwordValue);
                 }
+            } else if (jsonMsg.module === "PASS" && jsonMsg.event === "UPDATED") {
+                setAuthState("READY");
             }
         } else if (jsonMsg.type === "error") {
             if (jsonMsg.error_code === "PIN_REQ") setAuthState("PIN_REQ");

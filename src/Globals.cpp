@@ -5,6 +5,7 @@ String pendingWebsite = "";
 String pendingLogin = "";
 bool authenticated = false;
 String pendingPasswordToTransmit = "";
+String pendingPasswordToSave = "";
 
 SemaphoreHandle_t displayMutex = NULL;
 SemaphoreHandle_t fingerprintMutex = NULL;

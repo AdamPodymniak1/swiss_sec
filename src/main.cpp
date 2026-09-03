@@ -219,6 +219,31 @@ void cliTask(void *pvParameters) {
                 data["algId"] = defaultCryptoAlg;
                 CommsManager::sendEvent("SYS", "SETTINGS_UPDATED", &data);
             }
+            else if (cmd == "UPDATE_PASS" || cmd == "update") {
+                String website = req["site"] | req["website"] | "";
+                String login = req["login"] | "";
+                bool autogen = req["autogen"] | false;
+                String pass = autogen ? generateRandomPassword(16) : (req["pass"] | req["password"] | "");
+
+                if (website == "" || login == "") {
+                    CommsManager::sendError("PASS", "MISSING_ARGS");
+                    continue;
+                }
+
+                if (!isPasswordExists(website, login)) {
+                    CommsManager::sendError("PASS", "NOT_FOUND");
+                    secureWipe(pass);
+                    continue;
+                }
+
+                pendingWebsite = website;
+                pendingLogin = login;
+                pendingPasswordToSave = pass;
+                currentCommandState = STATE_AWAITING_FINGERPRINT_UPDATE;
+
+                showDisplayMessage(2, "AUTH TO UPDATE:", website, 0);
+                CommsManager::sendEvent("PASS", "AWAITING_HARDWARE_APPROVAL");
+            }
             else {
                 CommsManager::sendError("SYS", "UNKNOWN_CMD");
             }

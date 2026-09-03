@@ -139,19 +139,36 @@ function renderList(elementId, itemsArray, type) {
         img.onerror = () => { img.src = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%2300ffff'><circle cx='8' cy='8' r='5'/></svg>"; };
         
         const textSpan = document.createElement('span');
-        textSpan.innerText = displayLabel;
+        if (typeof rawItem === "object" && rawItem.status === "WEAK") {
+            textSpan.innerHTML = `${displayLabel} <span style="color: #ff8800; font-size: 10px; margin-left: 6px; font-weight: bold;">⚠️ WEAK</span>`;
+        } else {
+            textSpan.innerText = displayLabel;
+        }
         
         labelDiv.appendChild(img);
         labelDiv.appendChild(textSpan);
         
+        const actionDiv = document.createElement('div');
+        
+        if (type === 'pass') {
+            const updateBtn = document.createElement('button');
+            updateBtn.className = "icon-btn";
+            updateBtn.innerHTML = "✏️";
+            updateBtn.title = `Update ${displayLabel}`;
+            updateBtn.onclick = () => window.updateItem(type, rawItem);
+            actionDiv.appendChild(updateBtn);
+        }
+
         const delBtn = document.createElement('button');
         delBtn.className = "icon-btn btn-del";
         delBtn.innerHTML = "🗑️";
         delBtn.title = `Delete ${displayLabel}`;
         delBtn.onclick = () => window.deleteItem(type, rawItem);
         
+        actionDiv.appendChild(delBtn);
+        
         li.appendChild(labelDiv);
-        li.appendChild(delBtn);
+        li.appendChild(actionDiv);
         ul.appendChild(li);
     });
 }
@@ -322,6 +339,30 @@ document.getElementById('btnSetCrypto').onclick = () => {
     });
 };
 
+window.updateItem = function(type, item) {
+    if (type !== 'pass') return;
+
+    if (!confirm(`Are you sure you want to update the password for ${item.website}?`)) {
+        return;
+    }
+
+    const newPass = prompt(`Enter new password for ${item.website} (${item.login})\nLeave blank to auto-generate:`);
+    if (newPass === null) {
+        return;
+    }
+
+    showMsg(`Requesting update for '${item.website}'...`);
+
+    const payload = { cmd: "UPDATE_PASS", site: item.website, login: item.login };
+    if (newPass.trim() === "") {
+        payload.autogen = true;
+    } else {
+        payload.pass = newPass;
+    }
+
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: payload });
+};
+
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
         const json = message.json;
@@ -364,6 +405,9 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (json.module === "SYS" && json.event === "DIAGNOSTICS_COMPLETE" && json.data) {
                 const ul = document.getElementById('diagVisual');
                 ul.innerHTML = `<li><span class="test-pass">✔️</span> Diagnostics Passed (${json.data.passed}/${json.data.total})</li>`;
+            } else if (json.module === "PASS" && json.event === "UPDATED") {
+                showMsg("Password updated successfully!", "lime");
+                document.getElementById('btnListPass').click();
             }
         } else if (json.type === "error") {
             showMsg("Error: " + json.error_code, "orange");

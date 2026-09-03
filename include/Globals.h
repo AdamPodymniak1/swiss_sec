@@ -20,6 +20,7 @@ enum SystemState {
     STATE_AWAITING_DELETE_WEBSITE,
     STATE_AWAITING_DELETE_LOGIN,
     STATE_AWAITING_FINGERPRINT,
+    STATE_AWAITING_FINGERPRINT_UPDATE,
     STATE_AWAITING_FIDO_GET_NAME,
     STATE_AWAITING_FIDO_DELETE_NAME,
     STATE_AWAITING_TOTP_NAME,
@@ -41,6 +42,7 @@ extern String pendingWebsite;
 extern String pendingLogin;
 extern bool authenticated;
 extern String pendingPasswordToTransmit;
+extern String pendingPasswordToSave;
 
 extern SemaphoreHandle_t displayMutex;
 extern SemaphoreHandle_t fingerprintMutex;
