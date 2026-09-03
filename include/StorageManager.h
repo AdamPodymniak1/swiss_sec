@@ -19,7 +19,7 @@ void resetFailedPinAttempts();
 void factoryResetSystem();
 
 bool isPasswordExists(const String &website, const String &login);
-void savePassword(const String &website, const String &login, const String &password);
+bool savePassword(const String &website, const String &login, const String &password);
 String getPasswordFromStorage(const String &website, const String &login);
 bool deletePassword(const String &website, const String &login);
 void listPasswords();

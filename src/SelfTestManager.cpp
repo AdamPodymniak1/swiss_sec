@@ -6,7 +6,6 @@
 #include "StorageManager.h"
 #include "mbedtls/ecdsa.h"
 
-// Keep diagnostics compact and serial-friendly for on-device execution.
 void printTestResult(const char* featureName, bool success) {
     if (success) {
         Serial.print("[TEST:PASS] -> ");
@@ -73,24 +72,28 @@ bool testCryptoSubsystem() {
 
 bool testStorageSubsystem() {
     bool allPassed = true;
-    bool initialPinSet = isPinSet();
 
     String mockWebsite = "test_mock_site.com";
     String mockAccount = "test_mock_user_123";
     String mockSecret = "SuperSecurePassword99!";
 
-    savePassword(mockWebsite, mockAccount, mockSecret);
-    String retrievedSecret = getPasswordFromStorage(mockWebsite, mockAccount);
+    // Purge lingering test entry if present
+    deletePassword(mockWebsite, mockAccount);
 
-    if (retrievedSecret != mockSecret) {
+    if (!savePassword(mockWebsite, mockAccount, mockSecret)) {
         printTestResult("Storage: Vault Data Read/Write Integrity", false);
         allPassed = false;
     } else {
-        printTestResult("Storage: Vault Data Read/Write Integrity", true);
+        String retrievedSecret = getPasswordFromStorage(mockWebsite, mockAccount);
+        if (retrievedSecret != mockSecret) {
+            printTestResult("Storage: Vault Data Read/Write Integrity", false);
+            allPassed = false;
+        } else {
+            printTestResult("Storage: Vault Data Read/Write Integrity", true);
+        }
     }
 
-    deletePassword(mockWebsite, mockAccount);
-    if (getPasswordFromStorage(mockWebsite, mockAccount).length() != 0) {
+    if (!deletePassword(mockWebsite, mockAccount) || getPasswordFromStorage(mockWebsite, mockAccount).length() != 0) {
         printTestResult("Storage: Vault Single Node Erasure", false);
         allPassed = false;
     } else {

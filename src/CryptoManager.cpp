@@ -8,14 +8,9 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/asn1write.h"
 #include "mbedtls/error.h"
+#include "mbedtls/version.h"
 #include "StorageManager.h"
 #include <Ed25519.h>
-#include <mbedtls/version.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/version.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/error.h>
-#include <mbedtls/asn1write.h>
 #include <nvs_flash.h>
 #include <nvs.h>
 
@@ -23,7 +18,6 @@
 #define HASH_SIZE 32
 #define SALT_SIZE 16
 
-// Keep a lightweight state marker so fault injection attempts are visible before a key is accepted.
 #define FI_MAGIC_START  0x1A2B3C4D
 #define FI_MAGIC_PASSED 0x5E6F7A8B
 #define FI_MAGIC_FAILED 0xDEADBEEF
@@ -33,7 +27,6 @@ byte aesKey[32] = {0};
 
 SecureTerminal Terminal;
 
-// mbedTLS requires a zero-returning RNG callback; the ESP hardware provides entropy.
 static int hw_rng_callback(void *p_rng, unsigned char *output, size_t output_len) {
   (void)p_rng;
   esp_fill_random(output, output_len);
@@ -73,13 +66,11 @@ void initCrypto() {
   encryptionActive = false;
 }
 
-// Keep serial traffic plaintext until the ECDH handshake enables AES-GCM.
 String encryptMsg(const String &plainText) {
   if (!encryptionActive) return plainText;
 
   byte iv[12];
   generate_aes_gcm_nonce(iv);
-  //esp_fill_random(iv, sizeof(iv));
 
   size_t len = plainText.length();
   byte *cipher = (byte *)malloc(len);
@@ -156,7 +147,6 @@ String decryptMsg(const String &payload) {
   return out;
 }
 
-// The browser and firmware derive the same session key from the ephemeral P-256 exchange.
 void processHandshake(const String &clientPubHex) {
   volatile uint32_t fi_state = FI_MAGIC_START;
 
@@ -229,7 +219,6 @@ void processHandshake(const String &clientPubHex) {
   mbedtls_ecdh_free(&ctx);
 }
 
-// Batch terminal output so encrypted responses are emitted as complete frames.
 size_t SecureTerminal::write(uint8_t c) {
   buffer += (char)c;
   if (buffer.length() > 512) flush();
@@ -293,11 +282,9 @@ String generateRandomPassword(size_t length) {
     return password;
 }
 
-// Vault and passkey payloads use a dedicated 256-bit wrapping key.
 String encryptStoragePayload(const String &plainText, const byte *key256) {
   byte iv[12];
   generate_aes_gcm_nonce(iv);
-  //esp_fill_random(iv, sizeof(iv));
 
   size_t len = plainText.length();
   byte *cipher = (byte *)malloc(len);
@@ -397,7 +384,6 @@ String hashSHA256(const String &input) {
     #define M_Q   Q
 #endif
 
-// WebAuthn ES256 keys are stored as a private scalar plus an uncompressed public point.
 bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65) {
     if (privateKeyOut == nullptr || publicKeyOut65 == nullptr) {
         return false;
@@ -435,7 +421,6 @@ bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65) {
     #define M_D   d
 #endif
 
-// mbedTLS writes ASN.1 into the scratch buffer in reverse; copy only the final DER slice.
 bool signECDSA_P256(const uint8_t *privateKey32, const uint8_t *digest32, size_t digestLen,
                     uint8_t *sigDerOut, size_t *sigDerLenOut) {
     if (!privateKey32 || !digest32 || digestLen != 32 || !sigDerOut || !sigDerLenOut) {
@@ -577,7 +562,6 @@ bool generateRsa2048KeyPair(String& privateKeyHexOut, uint8_t* nOut, size_t* nLe
     return true;
 }
 
-// COSE algorithm IDs select the signing backend used for WebAuthn responses.
 bool generateAlgSignature(int algId, const String& privateKeyHex, const uint8_t* msg, size_t msgLen, uint8_t** sigOut, size_t* sigLen) {
     if (algId == -7) { 
         uint8_t hash[32];
@@ -672,7 +656,6 @@ int decodeBase32(const char* b32, uint8_t* out) {
     return count;
 }
 
-// TOTP uses the standard 30-second HMAC-SHA1 moving counter.
 String generateTOTP(const String& base32Secret, uint32_t unixTime) {
     uint8_t key[64];
     int keyLen = decodeBase32(base32Secret.c_str(), key);
@@ -707,7 +690,6 @@ String generateTOTP(const String& base32Secret, uint32_t unixTime) {
     return String(code);
 }
 
-// Passkeys are wrapped with a hardware-derived key rather than the PIN vault key.
 void getFidoHardwareKey(byte* outKey256) {
     uint8_t mac[6];
 
@@ -766,22 +748,19 @@ void init_aes_nonce_subsystem() {
 }
 
 void generate_aes_gcm_nonce(byte *nonce_out) {
-    if (!nonce_subsystem_initialized) abort(); // Failsafe against NVS failure
+    if (!nonce_subsystem_initialized) abort();
     
-    // Byte 0-3: NVS Boot Epoch
     nonce_out[0] = (boot_counter >> 24) & 0xFF;
     nonce_out[1] = (boot_counter >> 16) & 0xFF;
     nonce_out[2] = (boot_counter >> 8) & 0xFF;
     nonce_out[3] = boot_counter & 0xFF;
     
-    // Byte 4-7: RAM Session Counter
     session_counter++;
     nonce_out[4] = (session_counter >> 24) & 0xFF;
     nonce_out[5] = (session_counter >> 16) & 0xFF;
     nonce_out[6] = (session_counter >> 8) & 0xFF;
     nonce_out[7] = session_counter & 0xFF;
     
-    // Byte 8-11: Hardware TRNG Padding
     uint32_t rand_pad = esp_random();
     nonce_out[8] = (rand_pad >> 24) & 0xFF;
     nonce_out[9] = (rand_pad >> 16) & 0xFF;

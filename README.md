@@ -243,7 +243,7 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 
 ### Backup, Recovery, & Others
 * [ ] **Encrypted Backup Solutions:** Architect a secure, user-controlled export/import mechanism for offline backup and recovery.
-* [ ] **Rethinking communication with ESP32:** Adding better communication protocols (instead of simple text).
+* [x] **Rethinking communication with ESP32:** Adding better communication protocols (instead of simple text).
 * [ ] **Adding ability for creating custom scripts:** Ability to integrate new communication with custom scripts to create secured folders, SSH, etc.
 * [ ] **Technical Documentation:** Draft comprehensive technical documentation covering hardware schematics, firmware structure, and protocol flows.
 * [ ] **Mobile Companion Application:** Explore the feasibility of a companion mobile application for credential management.

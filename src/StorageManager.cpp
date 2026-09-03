@@ -1,5 +1,6 @@
 #include "StorageManager.h"
 #include "CryptoManager.h"
+#include "CommsManager.h"
 #include "SPIFFS.h"
 #include <ArduinoJson.h>
 #include "Globals.h"
@@ -161,13 +162,11 @@ bool verifyPin(const String &pin) {
         incrementFailedPinAttempts();
         int totalFailures = getFailedPinAttempts();
         if (totalFailures >= 10) {
-            Terminal.println("[SECURITY] CRITICAL:MAX_ATTEMPTS_EXCEEDED_WIPING_DEVICE");
-            Terminal.flush();
+            CommsManager::sendError("SECURITY", "MAX_ATTEMPTS_EXCEEDED", "Maximum PIN attempts reached. Device wiped.");
             factoryResetSystem();
             ESP.restart();
         } else {
-            Terminal.print("[SECURITY] WARN:PIN_BAD_ATTEMPT:");
-            Terminal.printf("%d/10\n", totalFailures);
+            CommsManager::sendError("SECURITY", "BAD_PIN_ATTEMPT", String(totalFailures) + "/10 attempts used.");
         }
         return false;
     }
@@ -191,11 +190,11 @@ bool isPasswordExists(const String &website, const String &login) {
     return !error && doc[website].is<JsonObject>() && doc[website][login].is<JsonVariant>();
 }
 
-void savePassword(const String &website, const String &login, const String &password) {
-    if (!isStorageKeyLoaded) { Terminal.println("[ERR] CODE:STORAGE_KEY_LOCKED"); return; }
-    if (website.length() > 64 || login.length() > 64) { Terminal.println("[ERR] CODE:IDENTIFIER_TOO_LONG"); return; }
-    if (password.length() > 4000) { Terminal.println("[ERR] CODE:PASS_TOO_LONG"); return; }
-    if (isPasswordExists(website, login)) { Terminal.println("[ERR] CODE:ALREADY_EXISTS"); return; }
+bool savePassword(const String &website, const String &login, const String &password) {
+    if (!isStorageKeyLoaded) { CommsManager::sendError("PASS", "KEY_LOCKED", "Storage key is not unlocked."); return false; }
+    if (website.length() > 64 || login.length() > 64) { CommsManager::sendError("PASS", "IDENTIFIER_TOO_LONG", "Website or login parameter is too long."); return false; }
+    if (password.length() > 4000) { CommsManager::sendError("PASS", "PASS_TOO_LONG", "Password length exceeds limits."); return false; }
+    if (isPasswordExists(website, login)) { CommsManager::sendError("PASS", "ALREADY_EXISTS", "Credential record already exists."); return false; }
 
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     JsonDocument doc;
@@ -213,15 +212,15 @@ void savePassword(const String &website, const String &login, const String &pass
     }
     if (totalLogins >= 1000) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[ERR] CODE:MAX_LIMIT_REACHED");
-        return;
+        CommsManager::sendError("PASS", "MAX_LIMIT_REACHED", "Vault capacity reached.");
+        return false;
     }
 
     String encryptedValue = encryptStoragePayload(password, storageKey);
     if (encryptedValue == "") {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[ERR] CODE:ENC_FAILED");
-        return;
+        CommsManager::sendError("PASS", "ENC_FAILED", "Failed to encrypt password payload.");
+        return false;
     }
 
     JsonObject siteObj = doc[website].is<JsonObject>() ? doc[website].as<JsonObject>() : doc[website].to<JsonObject>();
@@ -230,13 +229,13 @@ void savePassword(const String &website, const String &login, const String &pass
     File file = SPIFFS.open("/passwords.json", "w");
     if (!file) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[ERR] CODE:FILE_CREATE_FAILED");
-        return;
+        CommsManager::sendError("PASS", "FILE_CREATE_FAILED", "Unable to open vault storage file.");
+        return false;
     }
     serializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    Terminal.println("[PASS] OUT:SAVED");
+    return true;
 }
 
 String getPasswordFromStorage(const String &website, const String &login) {
@@ -297,13 +296,15 @@ void listPasswords() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     if (!SPIFFS.exists("/passwords.json")) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[PASS] LIST:EMPTY");
+        JsonDocument data;
+        data["items"].to<JsonArray>();
+        CommsManager::sendEvent("PASS", "LIST", &data);
         return;
     }
     File file = SPIFFS.open("/passwords.json", "r");
     if (!file) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[ERR] CODE:READ_FAILED");
+        CommsManager::sendError("PASS", "READ_FAILED", "Failed to open passwords file.");
         return;
     }
     JsonDocument doc;
@@ -312,7 +313,7 @@ void listPasswords() {
     xSemaphoreGive(storageMutex);
 
     if (error) {
-        Terminal.println("[ERR] CODE:READ_FAILED");
+        CommsManager::sendError("PASS", "READ_FAILED", "Failed to parse password JSON payload.");
         return;
     }
 
@@ -329,6 +330,9 @@ void listPasswords() {
             passwords.push_back(decryptStoragePayload(loginPair.value().as<String>(), storageKey));
         }
     }
+
+    JsonDocument responseData;
+    JsonArray itemsArray = responseData["items"].to<JsonArray>();
 
     for (size_t i = 0; i < websites.size(); i++) {
         String pwd = passwords[i];
@@ -354,12 +358,10 @@ void listPasswords() {
         }
         if (freq > 1) isWeak = true;
 
-        Terminal.print("[PASS] ITEM:");
-        Terminal.print(websites[i]);
-        Terminal.print("|");
-        Terminal.print(logins[i]);
-        if (isWeak) Terminal.println("|WEAK");
-        else Terminal.println("|OK");
+        JsonObject item = itemsArray.add<JsonObject>();
+        item["website"] = websites[i];
+        item["login"] = logins[i];
+        item["status"] = isWeak ? "WEAK" : "OK";
     }
 
     for (size_t i = 0; i < passwords.size(); i++) {
@@ -368,7 +370,8 @@ void listPasswords() {
             passwords[i] = "";
         }
     }
-    Terminal.println("[PASS] LIST:LIST_END");
+
+    CommsManager::sendEvent("PASS", "LIST", &responseData);
 }
 
 void showStorageInfo() {
@@ -402,7 +405,7 @@ void showStorageInfo() {
             while (file.available()) {
                 uint8_t status;
                 if (file.read(&status, 1) != 1) break;
-                file.seek(4, SeekCur); // Skip the algorithm identifier.
+                file.seek(4, SeekCur);
 
                 uint16_t len;
                 if (file.read((uint8_t*)&len, 2) == 2) file.seek(len, SeekCur);
@@ -418,7 +421,16 @@ void showStorageInfo() {
     }
     xSemaphoreGive(storageMutex);
     
-    Terminal.printf("[STORAGE] STATS:%d,%d,%d,%.2f,%d,%d,%.2f,%d\n", total, used, free, usage, count, chars, avg, passkeyCount);
+    JsonDocument data;
+    data["total_bytes"] = total;
+    data["used_bytes"] = used;
+    data["free_bytes"] = free;
+    data["usage_percent"] = usage;
+    data["passwords_count"] = count;
+    data["avg_login_length"] = avg;
+    data["passkeys_count"] = passkeyCount;
+
+    CommsManager::sendEvent("STORAGE", "STATS", &data);
 }
 
 void clearAllStoredPasswords() {
@@ -434,7 +446,7 @@ void clearAllStoredPasswords() {
     }
     xSemaphoreGive(storageMutex);
     clearStorageKey();
-    Serial.println("[STORAGE] VAULT PURGE COMPLETE");
+    CommsManager::sendEvent("STORAGE", "PURGE_COMPLETE");
 }
 
 bool isPasskeyExists(const String &credentialIdHex) {
@@ -472,7 +484,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     String encryptedPayload = encryptStoragePayload(rawPayload, fidoKey);
     
     if (encryptedPayload == "") {
-        Terminal.println("[ERR] CODE:PASSKEY_ENC_FAILED");
+        CommsManager::sendError("FIDO2", "PASSKEY_ENC_FAILED", "Failed to encrypt passkey.");
         return false;
     }
 
@@ -480,7 +492,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     File file = SPIFFS.open("/passkeys.bin", "a");
     if (!file) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[ERR] CODE:FILE_CREATE_FAILED");
+        CommsManager::sendError("FIDO2", "FILE_CREATE_FAILED", "Failed to open passkeys file.");
         return false;
     }
 
@@ -502,7 +514,7 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     
     file.close();
     xSemaphoreGive(storageMutex);
-    Terminal.println("[PASS] OUT:PASSKEY_SAVED");
+    CommsManager::sendEvent("FIDO2", "PASSKEY_SAVED");
     return true;
 }
 
@@ -632,7 +644,9 @@ void listFidoWebsites() {
     File file = SPIFFS.open("/passkeys.bin", "r");
     if (!file) {
         xSemaphoreGive(storageMutex);
-        Terminal.println("[FIDO2] OUT:EMPTY");
+        JsonDocument data;
+        data["websites"].to<JsonArray>();
+        CommsManager::sendEvent("FIDO2", "LIST", &data);
         return;
     }
 
@@ -662,16 +676,13 @@ void listFidoWebsites() {
     file.close();
     xSemaphoreGive(storageMutex);
 
-    if (rpIds.empty()) {
-        Terminal.println("[FIDO2] OUT:EMPTY");
-        return;
+    JsonDocument responseData;
+    JsonArray websitesArray = responseData["websites"].to<JsonArray>();
+    for (const String &rp : rpIds) {
+        websitesArray.add(rp);
     }
 
-    for (const String &rp : rpIds) {
-        Terminal.print("[FIDO2] ITEM:");
-        Terminal.println(rp.c_str());
-    }
-    Terminal.println("[FIDO2] OUT:LIST_END");
+    CommsManager::sendEvent("FIDO2", "LIST", &responseData);
 }
 
 bool deleteFidoWebsite(const String &rpId) {
@@ -770,7 +781,7 @@ String getFidoWebsiteInfo(const String &rpId) {
                     int secondNewline = decryptedPayload.indexOf('\n', firstNewline + 1);
                     if (firstNewline != -1 && secondNewline != -1) {
                         String userName = decryptedPayload.substring(firstNewline + 1, secondNewline);
-                        result += "[FIDO2] USER:" + (userName.length() > 0 ? userName : "N/A") + " | CRED_ID:" + cid + "\n";
+                        result += userName + " | CRED_ID:" + cid + "\n";
                     }
                 }
             }
@@ -799,6 +810,7 @@ void saveTotpSecret(const String &name, const String &secret) {
     String encryptedValue = encryptStoragePayload(secret, storageKey);
     if (encryptedValue == "") {
         xSemaphoreGive(storageMutex);
+        CommsManager::sendError("TOTP", "ENC_FAILED", "Failed to encrypt secret.");
         return;
     }
 
@@ -806,13 +818,14 @@ void saveTotpSecret(const String &name, const String &secret) {
     File file = SPIFFS.open("/totp.json", "w");
     if (!file) {
         xSemaphoreGive(storageMutex);
+        CommsManager::sendError("TOTP", "FILE_WRITE_FAILED", "Unable to save secret.");
         return;
     }
 
     serializeJson(doc, file);
     file.close();
     xSemaphoreGive(storageMutex);
-    Terminal.println("[TOTP] OUT:SAVED");
+    CommsManager::sendEvent("TOTP", "SAVED");
 }
 
 String getTotpSecret(const String &name) {
@@ -865,12 +878,17 @@ int loadDefaultCryptoAlg() {
 
 void handleTotpGetAll(uint32_t currentEpoch) {
     if (!isStorageKeyLoaded || !SPIFFS.exists("/totp.json")) {
-        Terminal.println("[TOTP] OUT: END_ALL");
+        JsonDocument data;
+        data["codes"].to<JsonObject>();
+        CommsManager::sendEvent("TOTP", "CODES", &data);
         return;
     }
 
     File file = SPIFFS.open("/totp.json", "r");
     JsonDocument doc;
+    JsonDocument responseData;
+    JsonObject codesObj = responseData["codes"].to<JsonObject>();
+
     if (deserializeJson(doc, file) == DeserializationError::Ok) {
         JsonObject obj = doc.as<JsonObject>();
         for (JsonPair pair : obj) {
@@ -880,12 +898,12 @@ void handleTotpGetAll(uint32_t currentEpoch) {
             String decryptedSecret = decryptStoragePayload(encryptedValue, storageKey);
             if (decryptedSecret != "") {
                 String codeStr = generateTOTP(decryptedSecret, currentEpoch);
-                Terminal.printf("[TOTP] CODE:%s:%s\n", accountName, codeStr.c_str());
+                codesObj[accountName] = codeStr;
             }
         }
     }
     file.close();
-    Terminal.println("[TOTP] OUT: END_ALL");
+    CommsManager::sendEvent("TOTP", "CODES", &responseData);
 }
 
 bool deleteTotpSecret(const String &name) {

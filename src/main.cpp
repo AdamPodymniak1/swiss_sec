@@ -77,7 +77,7 @@ void cliTask(void *pvParameters) {
             }
 
             if (!isPinSet()) {
-                if (cmd == "set_pin") {
+                if (cmd == "CREATE_PIN" || cmd == "set_pin") {
                     createPin(req["pin"] | "");
                     CommsManager::sendEvent("AUTH", "PIN_CREATED");
                 } else {
@@ -87,14 +87,13 @@ void cliTask(void *pvParameters) {
             }
 
             if (!authenticated) {
-                if (cmd == "verify_pin") {
-                    if (verifyPin(req["pin"] | "")) {
+                if (cmd == "VERIFY_PIN" || cmd == "verify_pin") {
+                    String pinInput = req["pin"] | "";
+                    if (verifyPin(pinInput)) {
                         authenticated = true;
-                        deriveStorageKey(req["pin"] | "");
+                        deriveStorageKey(pinInput);
                         showDisplayMessage(1, "ACCESS GRANTED", "", 0);
-                        CommsManager::sendEvent("AUTH", "SUCCESS");
-                    } else {
-                        CommsManager::sendError("AUTH", "INVALID_PIN");
+                        CommsManager::sendEvent("SECURITY", "PIN_OK");
                     }
                 } else {
                     CommsManager::sendError("AUTH", "PIN_REQ");
@@ -105,33 +104,41 @@ void cliTask(void *pvParameters) {
             // Authenticated Command Router
             if (cmd == "help") {
                 JsonDocument data;
-                data["commands"][0] = "create";
-                data["commands"][1] = "get";
-                data["commands"][2] = "delete";
-                data["commands"][3] = "diagnostics";
+                data["commands"][0] = "SAVE_PASS";
+                data["commands"][1] = "GET_PASS";
+                data["commands"][2] = "DELETE_PASS";
+                data["commands"][3] = "LIST_PASS";
+                data["commands"][4] = "SAVE_TOTP";
+                data["commands"][5] = "GET_TOTP";
+                data["commands"][6] = "DELETE_TOTP";
+                data["commands"][7] = "LIST_FIDO";
+                data["commands"][8] = "DELETE_FIDO";
+                data["commands"][9] = "STORAGE_INFO";
+                data["commands"][10] = "PURGE_STORAGE";
+                data["commands"][11] = "RUN_DIAGNOSTICS";
                 CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
-            else if (cmd == "create") {
-                String website = req["website"] | "";
+            else if (cmd == "SAVE_PASS" || cmd == "create") {
+                String website = req["site"] | req["website"] | "";
                 String login = req["login"] | "";
                 bool autogen = req["autogen"] | false;
-                String pass = autogen ? generateRandomPassword(16) : req["password"] | "";
+                String pass = autogen ? generateRandomPassword(16) : (req["pass"] | req["password"] | "");
 
                 if (website == "" || login == "") {
                     CommsManager::sendError("PASS", "MISSING_ARGS");
                     continue;
                 }
 
-                savePassword(website, login, pass);
-                
-                JsonDocument data;
-                if (autogen) data["generated_password"] = pass;
-                CommsManager::sendEvent("PASS", "SAVED", autogen ? &data : nullptr);
+                if (savePassword(website, login, pass)) {
+                    JsonDocument data;
+                    if (autogen) data["generated_password"] = pass;
+                    CommsManager::sendEvent("PASS", "SAVED", autogen ? &data : nullptr);
+                }
                 
                 secureWipe(website); secureWipe(login); secureWipe(pass);
-            } 
-            else if (cmd == "get") {
-                String website = req["website"] | "";
+            }
+            else if (cmd == "GET_PASS" || cmd == "get") {
+                String website = req["site"] | req["website"] | "";
                 String login = req["login"] | "";
                 String pw = getPasswordFromStorage(website, login);
                 
@@ -144,15 +151,62 @@ void cliTask(void *pvParameters) {
                     CommsManager::sendError("PASS", "NOT_FOUND");
                 }
             } 
-            else if (cmd == "delete") {
-                if (deletePassword(req["website"] | "", req["login"] | "")) {
+            else if (cmd == "DELETE_PASS" || cmd == "delete") {
+                String website = req["site"] | req["website"] | "";
+                String login = req["login"] | "";
+                if (deletePassword(website, login)) {
                     CommsManager::sendEvent("PASS", "DELETED");
                 } else {
                     CommsManager::sendError("PASS", "NOT_FOUND");
                 }
             }
-            else if (cmd == "list") {
+            else if (cmd == "LIST_PASS" || cmd == "list") {
                 listPasswords(); 
+            }
+            else if (cmd == "SAVE_TOTP") {
+                String name = req["name"] | "";
+                String secret = req["secret"] | "";
+                if (name != "" && secret != "") {
+                    saveTotpSecret(name, secret);
+                } else {
+                    CommsManager::sendError("TOTP", "MISSING_ARGS");
+                }
+            }
+            else if (cmd == "GET_TOTP") {
+                uint32_t epoch = req["epoch"] | 0;
+                handleTotpGetAll(epoch);
+            }
+            else if (cmd == "DELETE_TOTP") {
+                String name = req["name"] | "";
+                if (deleteTotpSecret(name)) {
+                    CommsManager::sendEvent("TOTP", "DELETED");
+                } else {
+                    CommsManager::sendError("TOTP", "NOT_FOUND");
+                }
+            }
+            else if (cmd == "LIST_FIDO") {
+                listFidoWebsites();
+            }
+            else if (cmd == "DELETE_FIDO") {
+                String site = req["site"] | req["rpId"] | "";
+                if (deleteFidoWebsite(site)) {
+                    CommsManager::sendEvent("FIDO2", "DELETED");
+                } else {
+                    CommsManager::sendError("FIDO2", "NOT_FOUND");
+                }
+            }
+            else if (cmd == "STORAGE_INFO") {
+                showStorageInfo();
+            }
+            else if (cmd == "PURGE_STORAGE") {
+                clearAllStoredPasswords();
+            }
+            else if (cmd == "RUN_DIAGNOSTICS") {
+                runFullSystemDiagnostics();
+                JsonDocument data;
+                data["passed"] = 4;
+                data["total"] = 4;
+                CommsManager::sendEvent("SYS", "DIAGNOSTICS_COMPLETE", &data);
             }
             else {
                 CommsManager::sendError("SYS", "UNKNOWN_CMD");

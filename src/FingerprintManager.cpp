@@ -3,6 +3,8 @@
 #include "Globals.h"
 #include "CryptoManager.h"
 #include "StorageManager.h"
+#include "CommsManager.h"
+#include <ArduinoJson.h>
 
 HardwareSerial mySerial(1);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
@@ -10,7 +12,7 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 void initFingerprintSensor() {
 #if USE_FINGERPRINT_SIMULATOR
     pinMode(SIMULATOR_BUTTON_PIN, INPUT_PULLUP);
-    Serial.println("SIMULATOR READY");
+    CommsManager::sendEvent("SYS", "FP_SIM_READY");
 #else
     mySerial.begin(57600, SERIAL_8N1, FINGERPRINT_RX, FINGERPRINT_TX);
 
@@ -20,9 +22,10 @@ void initFingerprintSensor() {
     xSemaphoreGive(fingerprintMutex);
 
     if (verified) {
-        Serial.println("READY");
+        CommsManager::sendEvent("SYS", "FP_READY");
     } else {
         showDisplayMessage(1, "SENSOR ERROR!", "", 2000);
+        CommsManager::sendError("SYS", "FP_SENSOR_ERROR");
     }
 #endif
 }
@@ -122,8 +125,9 @@ void updateFingerprintAsync() {
         String securePayload = challengeNonce + "1";
         String computedResponse = hashSHA256(securePayload);
 
-        Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
-        Terminal.flush();
+        JsonDocument data;
+        data["password"] = pendingPasswordToTransmit;
+        CommsManager::sendEvent("PASS", "TRANSMITTED", &data);
 
         secureWipe(pendingPasswordToTransmit);
         currentCommandState = STATE_READY;
@@ -159,6 +163,7 @@ void updateFingerprintAsync() {
             if (searchResult == FINGERPRINT_OK) {
                 if (matchConfidence == lastConfidenceScore && matchConfidence > 0) {
                     showDisplayMessage(1, "REPLAY DETECTED", "", 2000);
+                    CommsManager::sendError("AUTH", "REPLAY_DETECTED");
                     currentCommandState = STATE_READY;
                     return;
                 }
@@ -168,8 +173,9 @@ void updateFingerprintAsync() {
                     String securePayload = challengeNonce + String(matchedID);
                     String computedResponse = hashSHA256(securePayload); 
 
-                    Terminal.println("[PASS] OUT:" + pendingPasswordToTransmit);
-                    Terminal.flush();
+                    JsonDocument data;
+                    data["password"] = pendingPasswordToTransmit;
+                    CommsManager::sendEvent("PASS", "TRANSMITTED", &data);
 
                     secureWipe(pendingPasswordToTransmit);
                     currentCommandState = STATE_READY;
@@ -182,9 +188,11 @@ void updateFingerprintAsync() {
                     showDisplayMessage(1, "Logged In", "", 0);
                 } else {
                     showDisplayMessage(1, "Try again", "", 1000);
+                    CommsManager::sendError("AUTH", "LOW_CONFIDENCE");
                 }
             } else {
                 showDisplayMessage(1, "Unknown Finger", "", 2000);
+                CommsManager::sendError("AUTH", "UNKNOWN_FINGER");
             }
         } else {
             vTaskDelay(500 / portTICK_PERIOD_MS);
