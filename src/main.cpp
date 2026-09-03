@@ -3,6 +3,7 @@
 #include <sys/time.h>
 #include "Globals.h"
 #include "DisplayManager.h"
+#include "CommsManager.h"
 #include "FingerprintManager.h"
 #include "CryptoManager.h"
 #include "StorageManager.h"
@@ -12,33 +13,6 @@
 #include "soc/rtc_cntl_reg.h"
 #include "USB.h"
 #include "USBCDC.h"
-
-class CommManager {
-public:
-    static void send(const String& module, const String& status, JsonDocument* data = nullptr) {
-        JsonDocument doc;
-        doc["module"] = module;
-        doc["status"] = status;
-        if (data != nullptr && !data->isNull()) {
-            doc["data"] = *data;
-        }
-        String output;
-        serializeJson(doc, output);
-        Terminal.println(output);
-        Terminal.flush();
-    }
-
-    static void sendError(const String& module, const String& errCode) {
-        JsonDocument doc;
-        doc["module"] = module;
-        doc["status"] = "error";
-        doc["error_code"] = errCode;
-        String output;
-        serializeJson(doc, output);
-        Terminal.println(output);
-        Terminal.flush();
-    }
-};
 
 void fidoTask(void *pvParameters) {
     while (1) {
@@ -74,7 +48,7 @@ void cliTask(void *pvParameters) {
             JsonDocument req;
             DeserializationError err = deserializeJson(req, input);
             if (err) {
-                CommManager::sendError("SYS", "INVALID_JSON");
+                CommsManager::sendError("SYS", "INVALID_JSON");
                 continue;
             }
 
@@ -88,7 +62,7 @@ void cliTask(void *pvParameters) {
                 
                 JsonDocument data;
                 data["pin_set"] = isPinSet();
-                CommManager::send("SYS", "BOOT", &data);
+                CommsManager::sendEvent("SYS", "BOOT", &data);
                 continue;
             }
 
@@ -98,16 +72,16 @@ void cliTask(void *pvParameters) {
                 clearStorageKey();
                 currentCommandState = STATE_READY;
                 showDisplayMessage(1, "DISCONNECTED", "", 0);
-                CommManager::send("SYS", "DISCONNECTED");
+                CommsManager::sendEvent("SYS", "DISCONNECTED");
                 continue;
             }
 
             if (!isPinSet()) {
                 if (cmd == "set_pin") {
                     createPin(req["pin"] | "");
-                    CommManager::send("AUTH", "PIN_CREATED");
+                    CommsManager::sendEvent("AUTH", "PIN_CREATED");
                 } else {
-                    CommManager::sendError("AUTH", "NEW_PIN_REQ");
+                    CommsManager::sendError("AUTH", "NEW_PIN_REQ");
                 }
                 continue;
             }
@@ -118,12 +92,12 @@ void cliTask(void *pvParameters) {
                         authenticated = true;
                         deriveStorageKey(req["pin"] | "");
                         showDisplayMessage(1, "ACCESS GRANTED", "", 0);
-                        CommManager::send("AUTH", "SUCCESS");
+                        CommsManager::sendEvent("AUTH", "SUCCESS");
                     } else {
-                        CommManager::sendError("AUTH", "INVALID_PIN");
+                        CommsManager::sendError("AUTH", "INVALID_PIN");
                     }
                 } else {
-                    CommManager::sendError("AUTH", "PIN_REQ");
+                    CommsManager::sendError("AUTH", "PIN_REQ");
                 }
                 continue;
             }
@@ -135,7 +109,7 @@ void cliTask(void *pvParameters) {
                 data["commands"][1] = "get";
                 data["commands"][2] = "delete";
                 data["commands"][3] = "diagnostics";
-                CommManager::send("SYS", "HELP_MENU", &data);
+                CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
             else if (cmd == "create") {
                 String website = req["website"] | "";
@@ -144,7 +118,7 @@ void cliTask(void *pvParameters) {
                 String pass = autogen ? generateRandomPassword(16) : req["password"] | "";
 
                 if (website == "" || login == "") {
-                    CommManager::sendError("PASS", "MISSING_ARGS");
+                    CommsManager::sendError("PASS", "MISSING_ARGS");
                     continue;
                 }
 
@@ -152,7 +126,7 @@ void cliTask(void *pvParameters) {
                 
                 JsonDocument data;
                 if (autogen) data["generated_password"] = pass;
-                CommManager::send("PASS", "SAVED", autogen ? &data : nullptr);
+                CommsManager::sendEvent("PASS", "SAVED", autogen ? &data : nullptr);
                 
                 secureWipe(website); secureWipe(login); secureWipe(pass);
             } 
@@ -165,23 +139,23 @@ void cliTask(void *pvParameters) {
                     pendingPasswordToTransmit = pw;
                     showDisplayMessage(2, "GETTING:", website, 0);
                     currentCommandState = STATE_AWAITING_FINGERPRINT; 
-                    CommManager::send("PASS", "AWAITING_HARDWARE_APPROVAL");
+                    CommsManager::sendEvent("PASS", "AWAITING_HARDWARE_APPROVAL");
                 } else {
-                    CommManager::sendError("PASS", "NOT_FOUND");
+                    CommsManager::sendError("PASS", "NOT_FOUND");
                 }
             } 
             else if (cmd == "delete") {
                 if (deletePassword(req["website"] | "", req["login"] | "")) {
-                    CommManager::send("PASS", "DELETED");
+                    CommsManager::sendEvent("PASS", "DELETED");
                 } else {
-                    CommManager::sendError("PASS", "NOT_FOUND");
+                    CommsManager::sendError("PASS", "NOT_FOUND");
                 }
             }
             else if (cmd == "list") {
                 listPasswords(); 
             }
             else {
-                CommManager::sendError("SYS", "UNKNOWN_CMD");
+                CommsManager::sendError("SYS", "UNKNOWN_CMD");
             }
         }
         vTaskDelay(50 / portTICK_PERIOD_MS);
