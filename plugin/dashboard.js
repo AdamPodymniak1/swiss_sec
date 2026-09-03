@@ -5,11 +5,6 @@ let isConnected = false;
 let authState = "UNKNOWN";
 let pendingAutoGenerate = null;
 let pendingGetPassword = null;
-let pendingDeleteTotpName = null;
-
-let pendingGetFidoDomain = null;
-let pendingDeletePassName = null;
-let pendingDeleteFidoDomain = null;
 
 const terminal = document.getElementById('terminal');
 const connectBtn = document.getElementById('connectBtn');
@@ -83,7 +78,7 @@ async function connect() {
 async function disconnect() {
     if (port && port.writable) {
         try {
-            await sendSecure("DISCONNECT");
+            await sendSecure({ cmd: "DISCONNECT" });
             await new Promise(resolve => setTimeout(resolve, 100));
         } catch (err) {}
     }
@@ -92,9 +87,6 @@ async function disconnect() {
     setAuthState("UNKNOWN");
     pendingAutoGenerate = null;
     pendingGetPassword = null;
-    pendingGetFidoDomain = null;
-    pendingDeletePassName = null;
-    pendingDeleteFidoDomain = null;
 
     if (reader) {
         await reader.cancel();
@@ -108,98 +100,81 @@ async function disconnect() {
 }
 
 function processIncomingLine(text) {
-    if (text.includes("[AUTH] STATUS:PIN_REQ")) setAuthState("PIN_REQ");
-    else if (text.includes("[AUTH] STATUS:NEW_PIN_REQ")) setAuthState("NEW_PIN_REQ");
-    else if (text.includes("[AUTH] STATUS:SUCCESS") || text.includes("[SYS] STATUS:READY")) setAuthState("READY");
-    else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) setAuthState("NEW_PIN_REQ");
-    else if (text.includes("[PASS] STATUS:AWAITING_HARDWARE_APPROVAL")) setAuthState("AWAITING_FINGERPRINT");
+    let jsonMsg = null;
+    try {
+        jsonMsg = JSON.parse(text);
+    } catch (e) {
+        // Fallback for non-JSON or raw system lines
+    }
 
-    if (pendingAutoGenerate) {
-        if (text.includes("[PASS] REQ:WEBSITE")) {
-            sendSecure(pendingAutoGenerate.domain);
-        } else if (text.includes("[PASS] REQ:LOGIN")) {
-            sendSecure(pendingAutoGenerate.login);
-        } else if (text.includes("[PASS] AUTO_GENERATE_PASSWORD?")) {
-            sendSecure("Y");
+    if (jsonMsg) {
+        if (jsonMsg.type === "event") {
+            if (jsonMsg.module === "SYS" && jsonMsg.event === "BOOT") {
+                setAuthState(jsonMsg.data && jsonMsg.data.pin_set ? "PIN_REQ" : "NEW_PIN_REQ");
+            } else if (jsonMsg.module === "AUTH" && jsonMsg.event === "PIN_CREATED") {
+                setAuthState("PIN_REQ");
+            } else if (jsonMsg.module === "SECURITY" && jsonMsg.event === "PIN_OK") {
+                setAuthState("READY");
+            } else if (jsonMsg.module === "PASS" && jsonMsg.event === "AWAITING_HARDWARE_APPROVAL") {
+                setAuthState("AWAITING_FINGERPRINT");
+            } else if (jsonMsg.module === "PASS" && jsonMsg.event === "TRANSMITTED") {
+                setAuthState("READY");
+                const passwordValue = jsonMsg.data ? jsonMsg.data.password : null;
+                if (passwordValue && pendingGetPassword) {
+                    const targetObj = pendingGetPassword;
+                    pendingGetPassword = null;
+                    fillCredentialsInTab(targetObj, passwordValue);
+                }
+            } else if (jsonMsg.module === "PASS" && jsonMsg.event === "SAVED") {
+                setAuthState("READY");
+                const passwordValue = jsonMsg.data ? jsonMsg.data.generated_password : null;
+                if (passwordValue && pendingAutoGenerate) {
+                    const targetObj = pendingAutoGenerate;
+                    pendingAutoGenerate = null;
+                    fillCredentialsInTab(targetObj, passwordValue);
+                }
+            }
+        } else if (jsonMsg.type === "error") {
+            if (jsonMsg.error_code === "PIN_REQ") setAuthState("PIN_REQ");
+            else if (jsonMsg.error_code === "NEW_PIN_REQ") setAuthState("NEW_PIN_REQ");
+            else if (jsonMsg.error_code === "NOT_FOUND") {
+                if (pendingGetPassword) {
+                    terminal.innerText += `[System] Password not found.\n`;
+                    pendingGetPassword = null;
+                    setAuthState("READY");
+                }
+            }
         }
     }
 
-    if (pendingGetPassword) {
-        if (text.includes("[PASS] REQ:WEBSITE")) {
-            sendSecure(pendingGetPassword.domain);
-        } else if (text.includes("[PASS] REQ:LOGIN")) {
-            sendSecure(pendingGetPassword.login);
-        } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
-            terminal.innerText += `[System] No password found\n`;
-            pendingGetPassword = null;
-            setAuthState("READY");
-        }
-    }
-
-    if (text.includes("[FIDO2] REQ:WEBSITE_DOMAIN")) {
-        if (pendingGetFidoDomain) {
-            sendSecure(pendingGetFidoDomain);
-            pendingGetFidoDomain = null;
-        }
-    }
-
-    let passwordValue = null;
     let safeText = text;
-
-    if (text.includes("[PASS] GENERATED:")) {
-        passwordValue = text.split("[PASS] GENERATED:")[1].trim();
-        safeText = text.replace(passwordValue, "********");
-    } else if (text.includes("[PASS] VAL:")) {
-        passwordValue = text.split("[PASS] VAL:")[1].trim();
-        safeText = text.replace(passwordValue, "********");
-    } else if (text.includes("[PASS] OUT:") && !text.includes("SAVED") && !text.includes("DELETED")) {
-        passwordValue = text.split("[PASS] OUT:")[1].trim();
-        safeText = text.replace(passwordValue, "********");
-    }
-
-    if (text.includes("[PASS] OUT:DELETED") || text.includes("[TOTP] OUT:DELETED")) {
-        const deletedIdentifier = pendingDeletePassName || pendingDeleteFidoDomain || pendingDeleteTotpName || "item";
-        let category = "unknown";
-        if (pendingDeletePassName) category = "pass";
-        else if (pendingDeleteFidoDomain) category = "fido";
-        else if (pendingDeleteTotpName) category = "totp";
-
-        chrome.runtime.sendMessage({ target: "popup", type: "DELETE_CONFIRMED", category: category, identifier: deletedIdentifier }).catch(() => {});
-
-        pendingDeletePassName = null;
-        pendingDeleteFidoDomain = null;
-        pendingDeleteTotpName = null;
-    } else if (text.includes("[ERR] CODE:NOT_FOUND")) {
-        if (pendingDeletePassName || pendingDeleteFidoDomain || pendingDeleteTotpName) {
-            chrome.runtime.sendMessage({ target: "popup", type: "DELETE_FAILED" }).catch(() => {});
-            pendingDeletePassName = null;
-            pendingDeleteFidoDomain = null;
-            pendingDeleteTotpName = null;
-        }
-    }
-
-    if (passwordValue) {
-        const targetObj = pendingGetPassword || pendingAutoGenerate;
-        const targetTabId = targetObj ? targetObj.tabId : null;
-        const targetLogin = targetObj ? targetObj.login : null;
-        
-        pendingAutoGenerate = null;
-        pendingGetPassword = null;
-        setAuthState("READY");
-
-        if (targetTabId) {
-            chrome.tabs.sendMessage(targetTabId, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
-        } else {
-            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                if (tabs.length > 0) chrome.tabs.sendMessage(tabs[0].id, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
-            });
-        }
+    if (jsonMsg && jsonMsg.type === "event" && jsonMsg.event === "TRANSMITTED" && jsonMsg.data && jsonMsg.data.password) {
+        const maskedMsg = JSON.parse(JSON.stringify(jsonMsg));
+        maskedMsg.data.password = "********";
+        safeText = JSON.stringify(maskedMsg);
+    } else if (jsonMsg && jsonMsg.type === "event" && jsonMsg.event === "SAVED" && jsonMsg.data && jsonMsg.data.generated_password) {
+        const maskedMsg = JSON.parse(JSON.stringify(jsonMsg));
+        maskedMsg.data.generated_password = "********";
+        safeText = JSON.stringify(maskedMsg);
     }
 
     terminal.innerText += safeText + "\n";
     terminal.scrollTop = terminal.scrollHeight;
 
-    chrome.runtime.sendMessage({ target: "popup", type: "SERIAL_OUTPUT", text: safeText }).catch(() => {});
+    chrome.runtime.sendMessage({ target: "popup", type: "SERIAL_OUTPUT", text: safeText, json: jsonMsg }).catch(() => {});
+}
+
+function fillCredentialsInTab(targetObj, passwordValue) {
+    const targetTabId = targetObj ? targetObj.tabId : null;
+    const targetLogin = targetObj ? targetObj.login : null;
+
+    if (targetTabId) {
+        chrome.tabs.sendMessage(targetTabId, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
+    } else {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length > 0) chrome.tabs.sendMessage(tabs[0].id, { type: "FILL_CREDENTIALS", password: passwordValue, login: targetLogin }).catch(() => {});
+        });
+    }
 }
 
 async function readLoop() {
@@ -243,7 +218,7 @@ async function readLoop() {
                         aesKey = await crypto.subtle.importKey("raw", hash, {name: "AES-GCM"}, false, ["encrypt", "decrypt"]);
                         
                         terminal.innerText += "[System] Secure Tunnel Established.\n";
-                        await sendSecure("RESTART_SYSTEM");
+                        await sendSecure({ cmd: "RESTART_SYSTEM" });
                     } catch (cryptoErr) {
                         terminal.innerText += `[System Error] Key exchange calculation broken\n`;
                     }
@@ -277,7 +252,8 @@ async function sendRaw(text) {
     writer.releaseLock();
 }
 
-async function sendSecure(text) {
+async function sendSecure(payload) {
+    const text = (typeof payload === "object") ? JSON.stringify(payload) : payload;
     if (!aesKey) {
         await sendRaw(text + "\n");
         return;
@@ -288,13 +264,17 @@ async function sendSecure(text) {
         { name: "AES-GCM", iv: iv }, aesKey, new TextEncoder().encode(text)
     );
     
-    const payload = `ENC:${bufferToHex(iv)}:${bufferToHex(cipherBuffer)}\n`;
-    await sendRaw(payload);
+    const output = `ENC:${bufferToHex(iv)}:${bufferToHex(cipherBuffer)}\n`;
+    await sendRaw(output);
 }
 
 const handleSendAction = async () => {
     if (inputField.value.trim() === "") return;
-    await sendSecure(inputField.value.trim()); 
+    let payload = inputField.value.trim();
+    if (payload.startsWith("{") && payload.endsWith("}")) {
+        try { payload = JSON.parse(payload); } catch (e) {}
+    }
+    await sendSecure(payload); 
     inputField.value = "";
 };
 
@@ -308,63 +288,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: "ok" });
     } else if (message.type === "AUTO_GENERATE") {
         if (isConnected && authState === "READY") {
-            if (pendingAutoGenerate) return sendResponse({ status: "busy" }); // PREVENT DOUBLE FIRING
+            if (pendingAutoGenerate) return sendResponse({ status: "busy" });
             pendingAutoGenerate = { 
                 domain: message.hostname, 
                 login: message.login,
                 tabId: message.senderTabId || (sender.tab && sender.tab.id)
             };
-            sendSecure("create");
+            sendSecure({ cmd: "SAVE_PASS", site: message.hostname, login: message.login, autogen: true });
         }
         sendResponse({ status: "ok" });
     } else if (message.type === "GET_PASSWORD") {
         if (isConnected && authState === "READY") {
-            if (pendingGetPassword) return sendResponse({ status: "busy" }); // PREVENT DOUBLE FIRING
+            if (pendingGetPassword) return sendResponse({ status: "busy" });
             pendingGetPassword = {
                 domain: message.hostname,
                 login: message.login,
                 tabId: message.senderTabId || (sender.tab && sender.tab.id)
             };
-            sendSecure("get");
+            sendSecure({ cmd: "GET_PASS", site: message.hostname, login: message.login });
         }
         sendResponse({ status: "ok" });
-    } else if (message.type === "CMD_INFO") {
-        sendSecure("info");
-        sendResponse({ status: "ok" });
     } else if (message.type === "CMD_LIST_PASS") {
-        sendSecure("list");
+        sendSecure({ cmd: "LIST_PASS" });
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_LIST_FIDO") {
-        sendSecure("list_fido");
-        sendResponse({ status: "ok" });
-    } else if (message.type === "CMD_GET_FIDO") {
-        pendingGetFidoDomain = message.domain;
-        sendSecure("get_fido");
+        sendSecure({ cmd: "LIST_FIDO" });
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_DELETE_PASS") {
-        pendingDeletePassName = message.name;
-        terminal.innerText += "[System] Deleting password for " + message.name + " (" + message.login + ")\n";
-        
-        (async () => {
-            await sendSecure("delete");
-            await new Promise(r => setTimeout(r, 100));
-            await sendSecure(message.name);
-            await new Promise(r => setTimeout(r, 100));
-            await sendSecure(message.login);
-            sendResponse({ status: "ok" });
-        })();
-        return true; 
-        
+        sendSecure({ cmd: "DELETE_PASS", site: message.name, login: message.login });
+        sendResponse({ status: "ok" });
     } else if (message.type === "CMD_DELETE_FIDO") {
-        pendingDeleteFidoDomain = message.domain;
-        terminal.innerText += "[System] Deleting FIDO key for " + message.domain + "\n";
-        (async () => {
-            await sendSecure("delete_fido");
-            await new Promise(r => setTimeout(r, 100));
-            await sendSecure(pendingDeleteFidoDomain);
-            sendResponse({ status: "ok" });
-        })();
-        return true; 
+        sendSecure({ cmd: "DELETE_FIDO", site: message.domain });
+        sendResponse({ status: "ok" });
+    } else if (message.type === "CMD_UPDATE_SETTINGS") {
+        const algId = (message.algId !== undefined) ? parseInt(message.algId, 10) : -7;
+        sendSecure({ cmd: "UPDATE_SETTINGS", algId: algId });
+        sendResponse({ status: "ok" });
     } else if (message.type === "SEND") {
         sendSecure(message.payload);
         sendResponse({ status: "ok" });
@@ -373,18 +332,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_GET_ALL_TOTP") {
         const epochNow = Math.floor(Date.now() / 1000);
-        sendSecure(`totp_get_all ${epochNow}`);
+        sendSecure({ cmd: "GET_TOTP", epoch: epochNow });
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_DELETE_TOTP") {
-        pendingDeleteTotpName = message.name;
-        terminal.innerText += "[System] Deleting TOTP for " + message.name + "\n";
-        (async () => {
-            await sendSecure("totp_delete");
-            await new Promise(r => setTimeout(r, 100));
-            await sendSecure(pendingDeleteTotpName);
-            sendResponse({ status: "ok" });
-        })();
-        return true; 
+        sendSecure({ cmd: "DELETE_TOTP", name: message.name });
+        sendResponse({ status: "ok" });
     }
     return true;
 });

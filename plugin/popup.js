@@ -6,15 +6,9 @@ const navTabs = document.getElementById('navTabs');
 const vaultMsg = document.getElementById('vaultMessage');
 
 let isAuthenticated = false;
-
-let passItemsSet = new Set();
-let fidoItemsSet = new Set();
-let isFetchingPass = false;
-let isFetchingFido = false;
-
-let totpEntries = new Map();
-let totpInterval = null;
-let pendingTask = null;
+let currentAuthState = "UNKNOWN";
+let lastRefreshedEpochStep = -1;
+let totpAnimationFrameId = null;
 
 function showMsg(text, color = "#00ffff") {
     vaultMsg.innerText = text;
@@ -32,7 +26,7 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         document.getElementById(button.dataset.tab).classList.add('active');
 
         if (button.dataset.tab === "tab-dashboard") {
-            chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
+            chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "STORAGE_INFO" } });
             document.getElementById('btnListPass').click();
             document.getElementById('btnListFido').click();
         } else if (button.dataset.tab === "tab-totp") {
@@ -54,6 +48,7 @@ function checkStatus() {
         } else {
             openBtn.style.display = 'none';
             document.getElementById('disconnectBtn').style.display = response.connected ? 'block' : 'none';
+            currentAuthState = response.authState;
             
             if (response.authState === "READY") {
                 if (!isAuthenticated) {
@@ -84,7 +79,8 @@ function checkStatus() {
 
 const submitPin = () => {
     if (!pinInput.value) return;
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pinInput.value });
+    const commandName = (currentAuthState === "NEW_PIN_REQ") ? "CREATE_PIN" : "VERIFY_PIN";
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: commandName, pin: pinInput.value } });
     pinInput.value = "";
 };
 
@@ -93,7 +89,7 @@ pinInput.addEventListener("keyup", (e) => { if (e.key === "Enter") submitPin(); 
 openBtn.onclick = () => chrome.tabs.create({ url: "dashboard.html", pinned: true, active: false });
 
 document.getElementById('disconnectBtn').onclick = () => {
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "DISCONNECT" });
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "DISCONNECT" } });
     chrome.tabs.query({}, (tabs) => {
         tabs.forEach(tab => {
             if (tab.url && tab.url.includes("dashboard.html")) chrome.tabs.remove(tab.id);
@@ -130,19 +126,10 @@ function renderList(elementId, itemsArray, type) {
     }
     
     itemsArray.forEach(rawItem => {
-        let item = rawItem;
-        let isWeak = false;
-        let displayDomain = rawItem;
-        
-        if (type === 'pass' && rawItem.includes('|')) {
-            const parts = rawItem.split('|');
-            displayDomain = parts[0];
-            item = parts[0] + " | " + parts[1];
-            isWeak = (parts[2] === 'WEAK');
-        }
+        let displayDomain = typeof rawItem === "object" ? rawItem.website : rawItem;
+        let displayLabel = typeof rawItem === "object" ? `${rawItem.website} | ${rawItem.login}` : rawItem;
         
         const li = document.createElement('li');
-        
         const labelDiv = document.createElement('div');
         labelDiv.className = "item-label";
         
@@ -152,29 +139,16 @@ function renderList(elementId, itemsArray, type) {
         img.onerror = () => { img.src = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%2300ffff'><circle cx='8' cy='8' r='5'/></svg>"; };
         
         const textSpan = document.createElement('span');
-        textSpan.innerText = item;
+        textSpan.innerText = displayLabel;
         
         labelDiv.appendChild(img);
         labelDiv.appendChild(textSpan);
         
-        if (isWeak) {
-            const warnSpan = document.createElement('span');
-            warnSpan.innerText = "WEAK";
-            warnSpan.style.color = "#ffaa00";
-            warnSpan.style.fontSize = "9px";
-            warnSpan.style.marginLeft = "8px";
-            warnSpan.style.border = "1px solid #ffaa00";
-            warnSpan.style.padding = "2px 4px";
-            warnSpan.style.borderRadius = "3px";
-            warnSpan.style.fontWeight = "bold";
-            labelDiv.appendChild(warnSpan);
-        }
-        
         const delBtn = document.createElement('button');
         delBtn.className = "icon-btn btn-del";
         delBtn.innerHTML = "🗑️";
-        delBtn.title = `Delete ${item}`;
-        delBtn.onclick = () => window.deleteItem(type, item);
+        delBtn.title = `Delete ${displayLabel}`;
+        delBtn.onclick = () => window.deleteItem(type, rawItem);
         
         li.appendChild(labelDiv);
         li.appendChild(delBtn);
@@ -182,12 +156,16 @@ function renderList(elementId, itemsArray, type) {
     });
 }
 
-function renderTotpList() {
+function renderTotpList(codesObj) {
     const ul = document.getElementById('totpVisual');
     ul.innerHTML = "";
-    if (totpEntries.size === 0) return ul.innerHTML = `<div class="empty-state">No authenticators found.</div>`;
+    const entries = Object.entries(codesObj || {});
     
-    totpEntries.forEach((code, name) => {
+    lastRefreshedEpochStep = Math.floor(Date.now() / 30000);
+
+    if (entries.length === 0) return ul.innerHTML = `<div class="empty-state">No authenticators found.</div>`;
+    
+    entries.forEach(([name, code]) => {
         const li = document.createElement('li');
         li.style.cursor = "pointer";
         li.title = "Click to copy code";
@@ -226,34 +204,45 @@ function renderTotpList() {
         container.appendChild(header); container.appendChild(timerBg);
         li.appendChild(container); ul.appendChild(li);
     });
-
-    updateTotpTimers();
-    if (totpInterval) clearInterval(totpInterval);
-    totpInterval = setInterval(updateTotpTimers, 1000);
 }
 
 function updateTotpTimers() {
-    const epoch = Math.floor(Date.now() / 1000);
-    const remaining = 30 - (epoch % 30);
-    const pct = (remaining / 30) * 100;
-    
-    if (remaining === 30 && totpEntries.size > 0) {
-        document.getElementById('btnListTotp').click();
-    } else {
+    const totpTab = document.getElementById('tab-totp');
+    if (totpTab && totpTab.classList.contains('active')) {
+        const now = Date.now();
+        const remainingMs = 30000 - (now % 30000);
+        const remainingSec = remainingMs / 1000;
+        const currentStep = Math.floor(now / 30000);
+        const ratio = remainingMs / 30000;
+
+        // Ultra-smooth GPU scale transformation
         document.querySelectorAll('.totp-timer-fill').forEach(bar => {
-            bar.style.width = pct + '%';
-            bar.style.backgroundColor = remaining <= 5 ? '#ff4444' : '#00ffff';
+            bar.style.transform = `scaleX(${ratio})`;
+            bar.style.backgroundColor = remainingSec <= 5 ? '#ff4444' : '#00ffff';
         });
+
+        // Trigger automatic key rotation on period expiration
+        if (lastRefreshedEpochStep !== -1 && lastRefreshedEpochStep !== currentStep) {
+            lastRefreshedEpochStep = currentStep;
+            document.getElementById('btnListTotp').click();
+        }
     }
+
+    totpAnimationFrameId = requestAnimationFrame(updateTotpTimers);
 }
 
+// Start frame-rate synced animation loop
+if (totpAnimationFrameId) cancelAnimationFrame(totpAnimationFrameId);
+requestAnimationFrame(updateTotpTimers);
+
+
 window.deleteItem = function(type, item) {
-    if (!confirm(`Are you sure you want to permanently delete '${item}'?`)) return;
+    const identifier = (typeof item === "object") ? `${item.website} (${item.login})` : item;
+    if (!confirm(`Are you sure you want to permanently delete '${identifier}'?`)) return;
     
     if (type === 'pass') {
-        const parts = item.split(" | ");
-        showMsg(`Deleting '${parts[0]}'...`);
-        chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_PASS", name: parts[0], login: parts[1] });
+        showMsg(`Deleting '${item.website}'...`);
+        chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_PASS", name: item.website, login: item.login });
     } else if (type === 'fido') {
         showMsg(`Deleting FIDO key '${item}'...`);
         chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_DELETE_FIDO", domain: item });
@@ -269,62 +258,44 @@ document.getElementById('btnCreatePass').onclick = () => {
     const val = document.getElementById('newPassValue').value.trim();
     
     if (!name || !login) return showMsg("Site and Login required!", "orange");
-    if (pendingTask) return showMsg("Hardware busy...", "orange");
     
-    pendingTask = { type: 'CREATE_PASS', step: 'WAIT_WEBSITE', name: name, login: login, val: val };
     showMsg(`Creating '${name}'...`);
     
+    const payload = { cmd: "SAVE_PASS", site: name, login: login };
+    if (val) payload.pass = val;
+    else payload.autogen = true;
+
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: payload });
+
     document.getElementById('newPassName').value = "";
     document.getElementById('newPassLogin').value = "";
     document.getElementById('newPassValue').value = "";
-    
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "create" });
 };
 
 document.getElementById('btnListPass').onclick = () => {
-    isFetchingPass = true; passItemsSet.clear();
     document.getElementById('passVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "list" });
+    chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_LIST_PASS" });
 };
 
 document.getElementById('btnListFido').onclick = () => {
-    isFetchingFido = true; fidoItemsSet.clear();
     document.getElementById('fidoVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "list_fido" });
+    chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_LIST_FIDO" });
 };
 
 document.getElementById('btnRunDiag').onclick = () => {
     document.getElementById('diagVisual').innerHTML = '<div class="empty-state">Testing subsystems...</div>';
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "diagnostics" });
-};
-
-document.getElementById('btnSetCrypto').onclick = () => {
-    pendingTask = { type: 'SET_CRYPTO', val: document.getElementById('cryptoSelect').value };
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "set_crypto" });
-};
-
-document.getElementById('btnRegFinger').onclick = () => {
-    showMsg("Place finger on sensor...", "orange");
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "register_finger" });
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "RUN_DIAGNOSTICS" } });
 };
 
 document.getElementById('btnWipePass').onclick = () => {
-    if (confirm("WARNING: This will permanently delete ALL passwords and passkeys. Continue?")) {
+    if (confirm("WARNING: This will permanently purge the storage vault. Continue?")) {
         showMsg("Purging vault...", "red");
-        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "delete_pass" });
-    }
-};
-
-document.getElementById('btnFactoryReset').onclick = () => {
-    if (confirm("CRITICAL: Factory reset will wipe the PIN, all vault data, and fingerprints. Continue?")) {
-        showMsg("Sending reset command...", "red");
-        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "delete_pin" });
+        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "PURGE_STORAGE" } });
     }
 };
 
 document.getElementById('btnListTotp').onclick = () => {
     document.getElementById('totpVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
-    totpEntries.clear();
     chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_GET_ALL_TOTP" });
 };
 
@@ -333,132 +304,70 @@ document.getElementById('btnAddTotp').onclick = () => {
     const secret = document.getElementById('totpAddSecret').value.trim().replace(/\s+/g, '');
     
     if (!name || !secret) return showMsg("Name and Secret required!", "orange");
-    if (pendingTask) return showMsg("Hardware busy...", "orange");
     
-    pendingTask = { type: 'ADD_TOTP', step: 'WAIT_NAME', name: name, secret: secret };
     showMsg(`Adding TOTP for '${name}'...`);
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "SAVE_TOTP", name: name, secret: secret } });
     
-    document.getElementById('totpAddName').value = ""; document.getElementById('totpAddSecret').value = "";
-    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "totp_add" });
+    document.getElementById('totpAddName').value = ""; 
+    document.getElementById('totpAddSecret').value = "";
+};
+
+document.getElementById('btnSetCrypto').onclick = () => {
+    const selectedAlg = parseInt(document.getElementById('cryptoSelect').value, 10);
+    showMsg("Updating algorithm...");
+    chrome.runtime.sendMessage({
+        target: "dashboard",
+        type: "CMD_UPDATE_SETTINGS",
+        algId: selectedAlg
+    });
 };
 
 chrome.runtime.onMessage.addListener((message) => {
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
-        const lines = (message.text || "").split(/\r?\n/);
+        const json = message.json;
+        if (!json) return;
 
-        lines.forEach(rawLine => {
-            const text = rawLine.trim();
-            if (!text) return;
-
-            if (text.startsWith("[STORAGE] STATS:")) {
-                const p = text.split(":")[1].split(",");
-                if (p.length >= 8) renderStats(p[0], p[1], p[2], p[3], p[4], p[7]);
-                else if (p.length >= 5) renderStats(p[0], p[1], p[2], p[3], p[4], 0);
-            } else if (text.startsWith("[PASS] ITEM:") && isFetchingPass) {
-                const item = text.substring(12).trim();
-                if (item) passItemsSet.add(item);
-            } else if (text.startsWith("[PASS] LIST:") && isFetchingPass) {
-                isFetchingPass = false;
-                renderList('passVisual', Array.from(passItemsSet), 'pass');
-            } else if (text.startsWith("[FIDO2] ITEM:") && isFetchingFido) {
-                const item = text.substring(13).trim();
-                if (item) fidoItemsSet.add(item);
-            } else if (text.startsWith("[FIDO2] OUT:") && isFetchingFido) {
-                isFetchingFido = false;
-                renderList('fidoVisual', Array.from(fidoItemsSet), 'fido');
-            }
-
-            if (text.startsWith("[TEST:PASS] -> ")) {
-                const diagName = text.replace("[TEST:PASS] -> ", "");
-                const ul = document.getElementById('diagVisual');
-                if (ul.innerHTML.includes("Testing subsystems") || ul.innerHTML.includes("Ready")) ul.innerHTML = "";
-                ul.innerHTML += `<li><span class="test-pass">✔️</span> ${diagName}</li>`;
-            } else if (text.startsWith("[TEST:FAIL] *CRITICAL* -> ")) {
-                const diagName = text.replace("[TEST:FAIL] *CRITICAL* -> ", "");
-                const ul = document.getElementById('diagVisual');
-                if (ul.innerHTML.includes("Testing subsystems") || ul.innerHTML.includes("Ready")) ul.innerHTML = "";
-                ul.innerHTML += `<li><span class="test-fail">❌</span> ${diagName}</li>`;
-            }
-
-            if (pendingTask && pendingTask.type === 'SET_CRYPTO' && text.includes("[SYS] REQ:ALG_ID")) {
-                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.val });
-            }
-
-            if (text.includes("[SYS] DEFAULT_CRYPTO_ALG_SET:")) {
-                showMsg("Algorithm updated!", "lime"); pendingTask = null;
-            } else if (text.includes("[SYS] STATUS:FINGERPRINT_REGISTERED")) {
-                showMsg("Fingerprint Enrolled!", "lime");
-            } else if (text.includes("[SYS] VAULT PURGE SUCCESSFUL")) {
+        if (json.type === "event") {
+            if (json.module === "STORAGE" && json.event === "STATS" && json.data) {
+                const d = json.data;
+                renderStats(d.total_bytes, d.used_bytes, d.free_bytes, d.usage_percent, d.passwords_count, d.passkeys_count);
+            } else if (json.module === "PASS" && json.event === "LIST" && json.data) {
+                renderList('passVisual', json.data.items || [], 'pass');
+            } else if (json.module === "FIDO2" && json.event === "LIST" && json.data) {
+                renderList('fidoVisual', json.data.websites || [], 'fido');
+            } else if (json.module === "TOTP" && json.event === "CODES" && json.data) {
+                renderTotpList(json.data.codes || {});
+            } else if (json.module === "SYS" && json.event === "SETTINGS_UPDATED") {
+                showMsg("Crypto algorithm updated!", "lime");
+                if (json.data && json.data.algId !== undefined) {
+                    document.getElementById('cryptoSelect').value = json.data.algId.toString();
+                }
+            } else if (json.module === "PASS" && json.event === "SAVED") {
+                showMsg("Password saved!", "lime");
+                document.getElementById('btnListPass').click();
+            } else if (json.module === "PASS" && json.event === "DELETED") {
+                showMsg("Password deleted!", "lime");
+                document.getElementById('btnListPass').click();
+            } else if (json.module === "TOTP" && json.event === "SAVED") {
+                showMsg("TOTP Saved!", "lime");
+                document.getElementById('btnListTotp').click();
+            } else if (json.module === "TOTP" && json.event === "DELETED") {
+                showMsg("TOTP deleted!", "lime");
+                document.getElementById('btnListTotp').click();
+            } else if (json.module === "FIDO2" && json.event === "DELETED") {
+                showMsg("FIDO Key deleted!", "lime");
+                document.getElementById('btnListFido').click();
+            } else if (json.module === "STORAGE" && json.event === "PURGE_COMPLETE") {
                 showMsg("Vault Purged.", "lime");
                 document.getElementById('btnListPass').click();
                 document.getElementById('btnListFido').click();
-            } else if (text.includes("[AUTH] STATUS:FACTORY_RESET_COMPLETE")) {
-                chrome.storage.local.clear(() => {
-                    showMsg("Factory Reset Complete", "red");
-                    setTimeout(() => document.getElementById('disconnectBtn').click(), 1000);
-                });
+            } else if (json.module === "SYS" && json.event === "DIAGNOSTICS_COMPLETE" && json.data) {
+                const ul = document.getElementById('diagVisual');
+                ul.innerHTML = `<li><span class="test-pass">✔️</span> Diagnostics Passed (${json.data.passed}/${json.data.total})</li>`;
             }
-
-            if (pendingTask && pendingTask.type === 'CREATE_PASS') {
-                if (text.includes("[PASS] REQ:WEBSITE") && pendingTask.step === 'WAIT_WEBSITE') {
-                    pendingTask.step = 'WAIT_LOGIN';
-                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.name });
-                } else if (text.includes("[PASS] REQ:LOGIN") && pendingTask.step === 'WAIT_LOGIN') {
-                    pendingTask.step = 'WAIT_AUTOGEN';
-                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.login });
-                } else if ((text.includes("AUTO_GENERATE") || text.includes("(Y/N)")) && pendingTask.step === 'WAIT_AUTOGEN') {
-                    if (!pendingTask.val) {
-                        pendingTask.step = 'SENT_FINAL';
-                        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "Y" });
-                    } else {
-                        pendingTask.step = 'WAIT_VAL';
-                        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "N" });
-                    }
-                } else if (text.includes("[PASS] REQ:VAL") && pendingTask.step === 'WAIT_VAL') {
-                    pendingTask.step = 'SENT_FINAL';
-                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.val });
-                }
-            }
-
-            if (text === "[PASS] OUT:SAVED" || text.startsWith("[PASS] GENERATED:")) {
-                showMsg("Password saved!", "lime"); pendingTask = null;
-                document.getElementById('btnListPass').click();
-                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
-            } else if (text === "[PASS] OUT:DELETED") {
-                showMsg("Password deleted!", "lime");
-                document.getElementById('btnListPass').click();
-                chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: "info" });
-            } else if (text === "[FIDO2] OUT:DELETED") {
-                showMsg("FIDO Key deleted!", "lime"); document.getElementById('btnListFido').click();
-            } else if (text === "[TOTP] OUT:DELETED") {
-                showMsg("TOTP deleted!", "lime"); document.getElementById('btnListTotp').click();
-            } else if (text.startsWith("[ERR]")) {
-                showMsg("Error: " + text, "orange");
-            }
-
-            if (text.startsWith("[TOTP] CODE:")) {
-                const parts = text.replace("[TOTP] CODE:", "").trim().split(":");
-                if (parts.length >= 2) totpEntries.set(parts[0], parts[1]);
-            } else if (text === "[TOTP] OUT: END_ALL" || text === "[TOTP] OUT:END_ALL") {
-                renderTotpList();
-            }
-
-            if (pendingTask && pendingTask.type === 'ADD_TOTP') {
-                if (text.includes("[TOTP] REQ:NAME") && pendingTask.step === 'WAIT_NAME') {
-                    pendingTask.step = 'WAIT_SECRET';
-                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.name });
-                } else if (text.includes("[TOTP] REQ:BASE32_SECRET") && pendingTask.step === 'WAIT_SECRET') {
-                    pendingTask.step = 'DONE';
-                    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: pendingTask.secret });
-                    
-                    setTimeout(() => {
-                        showMsg("TOTP Secret Saved!", "lime");
-                        pendingTask = null;
-                        document.getElementById('btnListTotp').click();
-                    }, 400); 
-                }
-            }
-        });
+        } else if (json.type === "error") {
+            showMsg("Error: " + json.error_code, "orange");
+        }
     }
 });
 

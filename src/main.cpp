@@ -116,6 +116,7 @@ void cliTask(void *pvParameters) {
                 data["commands"][9] = "STORAGE_INFO";
                 data["commands"][10] = "PURGE_STORAGE";
                 data["commands"][11] = "RUN_DIAGNOSTICS";
+                data["commands"][12] = "UPDATE_SETTINGS";
                 CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
             else if (cmd == "SAVE_PASS" || cmd == "create") {
@@ -207,6 +208,16 @@ void cliTask(void *pvParameters) {
                 data["passed"] = 4;
                 data["total"] = 4;
                 CommsManager::sendEvent("SYS", "DIAGNOSTICS_COMPLETE", &data);
+            }
+            else if (cmd == "UPDATE_SETTINGS" || cmd == "SET_CRYPTO_ALG") {
+                int algId = req["algId"] | -7;
+                
+                saveDefaultCryptoAlg(algId);
+                defaultCryptoAlg = algId;
+
+                JsonDocument data;
+                data["algId"] = defaultCryptoAlg;
+                CommsManager::sendEvent("SYS", "SETTINGS_UPDATED", &data);
             }
             else {
                 CommsManager::sendError("SYS", "UNKNOWN_CMD");

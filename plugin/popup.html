@@ -23,8 +23,8 @@
         
         /* Add Password Form */
         .add-row { display: flex; gap: 4px; margin-bottom: 8px; }
-        .add-row input { margin-bottom: 0; width: 100%; font-size: 11px; }
-        .add-row button { margin-bottom: 0; width: 60px; background: #006666; border-color: #008888; padding: 6px; font-size: 11px; }
+        .add-row input { margin-bottom: 0; width: 100%; font-size: 11px; flex: 1; min-width: 0; }
+        .add-row button { margin-bottom: 0; width: 45px; background: #006666; border-color: #008888; padding: 6px; font-size: 11px; flex-shrink: 0; }
         .add-row button:hover { background: #008888; }
 
         /* Stats visual */
@@ -47,12 +47,19 @@
         .empty-state { padding: 10px; text-align: center; color: #666; font-style: italic; }
         .info-status { font-size: 11px; color: #00ffff; margin-top: 4px; text-align: center; height: 14px; }
 
-        /* TOTP Dynamic List & Timer Bar */
+        /* TOTP Dynamic List & Smooth GPU Timer Bar */
         .totp-item { display: flex; flex-direction: column; width: 100%; padding: 4px 0; }
         .totp-header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 6px; }
         .totp-code { font-size: 16px; font-family: monospace; letter-spacing: 2px; color: #00ffff; font-weight: bold; }
         .totp-timer-bg { background: #262626; height: 4px; width: 100%; border-radius: 2px; overflow: hidden; }
-        .totp-timer-fill { background: #00ffff; height: 100%; transition: width 1s linear; }
+        .totp-timer-fill { 
+            background: #00ffff; 
+            height: 100%; 
+            width: 100%;
+            transform-origin: left center;
+            transition: background-color 0.3s ease; 
+            will-change: transform; 
+        }
 
         /* Diagnostic & Settings Visuals */
         .danger-btn { background: #550000; border-color: #880000; color: #ffcccc; }
@@ -63,9 +70,6 @@
         .test-pass { color: #00ff00; }
         .test-fail { color: #ff3333; }
         select { width: 100%; padding: 7px; margin-bottom: 8px; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; font-size: 12px; }
-
-        .add-row input { margin-bottom: 0; width: 100%; font-size: 11px; flex: 1; min-width: 0; }
-        .add-row button { margin-bottom: 0; width: 45px; background: #006666; border-color: #008888; padding: 6px; font-size: 11px; flex-shrink: 0; }
     </style>
 </head>
 <body>
@@ -89,13 +93,11 @@
 
     <!-- TAB 2: Vault Dashboard -->
     <div id="tab-dashboard" class="tab-content">
-        <!-- System Storage Stats -->
         <div class="action-group">
             <div class="action-title"><span>Storage Usage</span></div>
             <div id="statsVisual"><div class="empty-state">Loading stats...</div></div>
         </div>
 
-        <!-- Password Vault -->
         <div class="action-group">
             <div class="action-title">
                 <span>Passwords</span>
@@ -110,7 +112,6 @@
             <ul id="passVisual" class="data-list"></ul>
         </div>
 
-        <!-- FIDO2 Authenticator Keys -->
         <div class="action-group">
             <div class="action-title">
                 <span>FIDO2 Passkeys</span>
@@ -124,7 +125,6 @@
 
     <!-- TAB 3: TOTP Authenticator -->
     <div id="tab-totp" class="tab-content">
-        <!-- Active TOTP Codes List -->
         <div class="action-group">
             <div class="action-title">
                 <span>Authenticator Codes</span>
@@ -135,7 +135,6 @@
             </ul>
         </div>
 
-        <!-- Add TOTP Secret -->
         <div class="action-group">
             <div class="action-title"><span>Add New Authenticator</span></div>
             <div class="add-row">
@@ -148,7 +147,6 @@
 
     <!-- TAB 4: Settings & Diagnostics -->
     <div id="tab-settings" class="tab-content">
-        <!-- FIDO2 Algorithm -->
         <div class="action-group">
             <div class="action-title"><span>Default Crypto Algorithm</span></div>
             <div class="add-row">
@@ -164,7 +162,6 @@
             </div>
         </div>
 
-        <!-- Hardware Diagnostics -->
         <div class="action-group">
             <div class="action-title">
                 <span>System Diagnostics</span>
@@ -175,7 +172,6 @@
             </ul>
         </div>
 
-        <!-- Hardware Administration -->
         <div class="action-group">
             <div class="action-title"><span>Administration</span></div>
             <button id="btnRegFinger">Enroll New Fingerprint</button>
