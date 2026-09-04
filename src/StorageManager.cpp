@@ -1023,3 +1023,119 @@ std::vector<String> findAllCredentialsByRp(const String &rpId) {
     xSemaphoreGive(storageMutex);
     return results;
 }
+
+std::vector<String> getAllStoredCredentialIds() {
+    std::vector<String> results;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/passkeys.bin", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return results;
+    }
+    while (file.available()) {
+        uint8_t status;
+        if (file.read(&status, 1) != 1) break;
+        file.seek(4, SeekCur);
+        String cid = readSpiffsString(file);
+        readSpiffsString(file); // skip rp
+        uint16_t payLen;
+        file.read((uint8_t*)&payLen, 2);
+        file.seek(payLen, SeekCur);
+        if (status == 1) {
+            results.push_back(cid);
+        }
+    }
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return results;
+}
+
+std::vector<String> getAllStoredRpIds() {
+    std::vector<String> results;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/passkeys.bin", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return results;
+    }
+    while (file.available()) {
+        uint8_t status;
+        if (file.read(&status, 1) != 1) break;
+        file.seek(4, SeekCur);
+        readSpiffsString(file); // skip cid
+        String rp = readSpiffsString(file);
+        uint16_t payLen;
+        file.read((uint8_t*)&payLen, 2);
+        file.seek(payLen, SeekCur);
+        if (status == 1) {
+            bool exists = false;
+            for (const String &s : results) {
+                if (s == rp) { exists = true; break; }
+            }
+            if (!exists) results.push_back(rp);
+        }
+    }
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return results;
+}
+
+bool deletePasskeyRecord(const String &credentialIdHex) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/passkeys.bin", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+
+    File tempFile = SPIFFS.open("/passkeys.tmp", "w");
+    if (!tempFile) {
+        file.close();
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+
+    bool deleted = false;
+    while (file.available()) {
+        uint8_t status;
+        if (file.read(&status, 1) != 1) break;
+        int algId;
+        file.read((uint8_t*)&algId, 4);
+        
+        String cid = readSpiffsString(file);
+        String rp = readSpiffsString(file);
+        String pay = readSpiffsString(file);
+        
+        if (status == 1 && cid == credentialIdHex) {
+            deleted = true;
+        } else if (status == 1) {
+            tempFile.write(&status, 1);
+            tempFile.write((uint8_t*)&algId, 4);
+            
+            uint16_t len = cid.length();
+            tempFile.write((uint8_t*)&len, 2);
+            tempFile.write((uint8_t*)cid.c_str(), len);
+            
+            len = rp.length();
+            tempFile.write((uint8_t*)&len, 2);
+            tempFile.write((uint8_t*)rp.c_str(), len);
+            
+            len = pay.length();
+            tempFile.write((uint8_t*)&len, 2);
+            tempFile.write((uint8_t*)pay.c_str(), len);
+        }
+    }
+    
+    file.close();
+    tempFile.close();
+
+    if (deleted) {
+        SPIFFS.remove("/passkeys.bin");
+        SPIFFS.rename("/passkeys.tmp", "/passkeys.bin");
+    } else {
+        SPIFFS.remove("/passkeys.tmp");
+    }
+
+    xSemaphoreGive(storageMutex);
+    return deleted;
+}

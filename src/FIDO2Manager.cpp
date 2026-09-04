@@ -22,6 +22,15 @@ static uint8_t nextAssertionSalt1[32] = {0};
 static uint8_t nextAssertionSalt2[32] = {0};
 static size_t nextAssertionSalt1Len = 0;
 static size_t nextAssertionSalt2Len = 0;
+static std::vector<String> enumRpList;
+static size_t enumRpIdx = 0;
+static std::vector<String> enumCredList;
+static size_t enumCredIdx = 0;
+static uint8_t sessionPrivateKey[32];
+static bool sessionKeyValid = false;
+static uint8_t sessionSharedSecret[32];
+static uint8_t sessionAesKey[32];
+static uint8_t activeAuthToken[32];
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
@@ -432,8 +441,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         // 0x01: versions
         encoder.writeUnsignedInt(1);
-        encoder.writeArrayHeader(1);
+        encoder.writeArrayHeader(2);
         encoder.writeTextString("FIDO_2_0");
+        encoder.writeTextString("FIDO_2_1_PRE");
 
         // 0x03: aaguid
         encoder.writeUnsignedInt(3);
@@ -442,7 +452,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         // 0x04: options map
         encoder.writeUnsignedInt(4);
-        encoder.writeMapHeader(4);
+        encoder.writeMapHeader(7);
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         #if USE_FINGERPRINT_SIMULATOR
@@ -450,7 +460,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         #else
         encoder.writeTextString("uv"); encoder.writeBoolean(true);
         #endif
+        encoder.writeTextString("credMgmt"); encoder.writeBoolean(true);
         encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
+        encoder.writeTextString("pinUvAuthToken"); encoder.writeBoolean(true);
+        encoder.writeTextString("credentialMgmtPreview"); encoder.writeBoolean(true);
 
         // 0x05: maxMsgSize
         encoder.writeUnsignedInt(5); encoder.writeUnsignedInt(8192);
@@ -1748,6 +1761,267 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         free(signatureASN1);
         free(localRespBuf);
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == 0x0A) { // authenticatorCredentialManagement
+        CborParser parser(data + 1, len - 1);
+        uint8_t rootType;
+        uint64_t rootElements;
+
+        if (!parser.readTypeAndValue(rootType, rootElements) || rootType != 5) {
+            uint8_t err = 0x11;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        uint64_t subCommand = 0;
+        uint8_t targetRpIdHash[32] = {0};
+        size_t targetRpIdHashLen = 0;
+        uint8_t targetCredId[64] = {0};
+        size_t targetCredIdLen = 0;
+
+        for (uint64_t i = 0; i < rootElements; i++) {
+            uint8_t keyType;
+            uint64_t mapKey;
+            if (!parser.readTypeAndValue(keyType, mapKey) || keyType != 0) {
+                parser.skipValue();
+                continue;
+            }
+
+            if (mapKey == 0x01) { // Key 0x01 is subCommand
+                uint8_t valType;
+                parser.readTypeAndValue(valType, subCommand);
+            } else if (mapKey == 0x02) { // Key 0x02 is subCommandParams
+                uint8_t subType; uint64_t subElements;
+                if (parser.readTypeAndValue(subType, subElements) && subType == 5) {
+                    for (uint64_t j = 0; j < subElements; j++) {
+                        uint8_t paramKeyType; uint64_t paramKey;
+                        if (parser.readTypeAndValue(paramKeyType, paramKey) && paramKeyType == 0) {
+                            if (paramKey == 0x01) {
+                                parser.readByteString(targetRpIdHash, sizeof(targetRpIdHash), targetRpIdHashLen);
+                            } else if (paramKey == 0x02) {
+                                uint8_t credMapType; uint64_t credMapElem;
+                                if (parser.readTypeAndValue(credMapType, credMapElem) && credMapType == 5) {
+                                    for (uint64_t k = 0; k < credMapElem; k++) {
+                                        char keyStr[16] = {0};
+                                        if (parser.readTextString(keyStr, sizeof(keyStr))) {
+                                            if (strcmp(keyStr, "id") == 0) {
+                                                parser.readByteString(targetCredId, sizeof(targetCredId), targetCredIdLen);
+                                            } else { parser.skipValue(); }
+                                        } else { parser.skipValue(); }
+                                    }
+                                } else { parser.skipValue(); }
+                            } else { parser.skipValue(); }
+                        } else { parser.skipValue(); }
+                    }
+                } else { parser.skipValue(); }
+            } else if (mapKey == 0x03) { // Key 0x03 is pinUvAuthProtocol
+                uint8_t dummyType; uint64_t dummyVal;
+                parser.readTypeAndValue(dummyType, dummyVal);
+            } else if (mapKey == 0x04) { // Key 0x04 is pinUvAuthParam
+                uint8_t dummyBuf[64]; size_t dummyLen;
+                parser.readByteString(dummyBuf, sizeof(dummyBuf), dummyLen);
+            } else {
+                parser.skipValue();
+            }
+        }
+
+        responseBuffer[0] = CTAP2_OK;
+        CborEncoder encoder(&responseBuffer[1], 8191);
+
+        // 0x01: getCredsMetadata
+        if (subCommand == 0x01) {
+            std::vector<String> allCreds = getAllStoredCredentialIds();
+            encoder.writeMapHeader(2);
+            encoder.writeUnsignedInt(0x01); // existingOpenCredentialsCount
+            encoder.writeUnsignedInt(allCreds.size());
+            encoder.writeUnsignedInt(0x02); // maxPossibleRemainingCredentialsCount
+            encoder.writeUnsignedInt(1000 - allCreds.size());
+        }
+        // 0x02: enumerateRPsBegin
+        else if (subCommand == 0x02) {
+            enumRpList = getAllStoredRpIds();
+            enumRpIdx = 0;
+
+            if (enumRpList.empty()) {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            String currentRp = enumRpList[enumRpIdx++];
+            uint8_t rpHash[32];
+            mbedtls_md_context_t sha_ctx;
+            mbedtls_md_init(&sha_ctx);
+            mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+            mbedtls_md_starts(&sha_ctx);
+            mbedtls_md_update(&sha_ctx, (const unsigned char*)currentRp.c_str(), currentRp.length());
+            mbedtls_md_finish(&sha_ctx, rpHash);
+            mbedtls_md_free(&sha_ctx);
+
+            encoder.writeMapHeader(3);
+            encoder.writeUnsignedInt(0x03); // rp
+            encoder.writeMapHeader(1);
+            encoder.writeTextString("id");
+            encoder.writeTextString(currentRp.c_str());
+
+            encoder.writeUnsignedInt(0x04); // rpIDHash
+            encoder.writeByteString(rpHash, 32);
+
+            encoder.writeUnsignedInt(0x05); // totalRPs
+            encoder.writeUnsignedInt(enumRpList.size());
+        }
+        // 0x03: enumerateRPsGetNextRP
+        else if (subCommand == 0x03) {
+            if (enumRpIdx >= enumRpList.size()) {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            String currentRp = enumRpList[enumRpIdx++];
+            uint8_t rpHash[32];
+            mbedtls_md_context_t sha_ctx;
+            mbedtls_md_init(&sha_ctx);
+            mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+            mbedtls_md_starts(&sha_ctx);
+            mbedtls_md_update(&sha_ctx, (const unsigned char*)currentRp.c_str(), currentRp.length());
+            mbedtls_md_finish(&sha_ctx, rpHash);
+            mbedtls_md_free(&sha_ctx);
+
+            encoder.writeMapHeader(2);
+            encoder.writeUnsignedInt(0x03); // rp
+            encoder.writeMapHeader(1);
+            encoder.writeTextString("id");
+            encoder.writeTextString(currentRp.c_str());
+
+            encoder.writeUnsignedInt(0x04); // rpIDHash
+            encoder.writeByteString(rpHash, 32);
+        }
+        // 0x04: enumerateCredentialsBegin
+        else if (subCommand == 0x04) {
+            enumCredList.clear();
+            enumCredIdx = 0;
+
+            std::vector<String> allCreds = getAllStoredCredentialIds();
+            for (const String &credHex : allCreds) {
+                String rpId, userIdHex, userName, privKeyHex;
+                int algId;
+                if (getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId)) {
+                    uint8_t rpHash[32];
+                    mbedtls_md_context_t sha_ctx;
+                    mbedtls_md_init(&sha_ctx);
+                    mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+                    mbedtls_md_starts(&sha_ctx);
+                    mbedtls_md_update(&sha_ctx, (const unsigned char*)rpId.c_str(), rpId.length());
+                    mbedtls_md_finish(&sha_ctx, rpHash);
+                    mbedtls_md_free(&sha_ctx);
+
+                    if (memcmp(rpHash, targetRpIdHash, 32) == 0) {
+                        enumCredList.push_back(credHex);
+                    }
+                }
+            }
+
+            if (enumCredList.empty()) {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            String credHex = enumCredList[enumCredIdx++];
+            String rpId, userIdHex, userName, privKeyHex;
+            int algId;
+            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId);
+
+            uint8_t binCredId[64];
+            size_t credLen = credHex.length() / 2;
+            fromHex(credHex, binCredId, credLen);
+
+            uint8_t binUserId[64];
+            size_t userLen = userIdHex.length() / 2;
+            fromHex(userIdHex, binUserId, userLen);
+
+            encoder.writeMapHeader(3);
+            encoder.writeUnsignedInt(0x06); // user
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id"); // len 2
+            encoder.writeByteString(binUserId, userLen);
+            encoder.writeTextString("name"); // len 4
+            encoder.writeTextString(userName.c_str());
+
+            encoder.writeUnsignedInt(0x07); // credentialID
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id"); // Canonical CBOR: "id" (len 2) comes BEFORE "type" (len 4)
+            encoder.writeByteString(binCredId, credLen);
+            encoder.writeTextString("type");
+            encoder.writeTextString("public-key");
+
+            encoder.writeUnsignedInt(0x09); // totalCredentials
+            encoder.writeUnsignedInt(enumCredList.size());
+        }
+        // 0x05: enumerateCredentialsGetNextCredential
+        else if (subCommand == 0x05) {
+            if (enumCredIdx >= enumCredList.size()) {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            String credHex = enumCredList[enumCredIdx++];
+            String rpId, userIdHex, userName, privKeyHex;
+            int algId;
+            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId);
+
+            uint8_t binCredId[64];
+            size_t credLen = credHex.length() / 2;
+            fromHex(credHex, binCredId, credLen);
+
+            uint8_t binUserId[64];
+            size_t userLen = userIdHex.length() / 2;
+            fromHex(userIdHex, binUserId, userLen);
+
+            encoder.writeMapHeader(2);
+            encoder.writeUnsignedInt(0x06); // user
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id"); // len 2
+            encoder.writeByteString(binUserId, userLen);
+            encoder.writeTextString("name"); // len 4
+            encoder.writeTextString(userName.c_str());
+
+            encoder.writeUnsignedInt(0x07); // credentialID
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id"); // Canonical CBOR: "id" (len 2) comes BEFORE "type" (len 4)
+            encoder.writeByteString(binCredId, credLen);
+            encoder.writeTextString("type");
+            encoder.writeTextString("public-key");
+        }
+        // 0x06: deleteCredential
+        else if (subCommand == 0x06) {
+            String credHex = toHex(targetCredId, targetCredIdLen);
+            if (deletePasskeyRecord(credHex)) {
+                encoder.writeMapHeader(0);
+            } else {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+        }
+        else {
+            uint8_t err = CTAP2_ERR_UNSUPPORTED_OPTION;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         free(responseBuffer);
         return;
     }

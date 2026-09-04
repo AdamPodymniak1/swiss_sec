@@ -54,5 +54,8 @@ void createFidoPin(const String &pin);
 int getFailedFidoPinAttempts();
 void resetFido2System();
 std::vector<String> findAllCredentialsByRp(const String &rpId);
+std::vector<String> getAllStoredCredentialIds();
+std::vector<String> getAllStoredRpIds();
+bool deletePasskeyRecord(const String &credentialIdHex);
 
 #endif
