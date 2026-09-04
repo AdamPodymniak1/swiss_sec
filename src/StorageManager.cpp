@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include <vector>
 #include "mbedtls/pkcs5.h"
+#include "mbedtls/aes.h"
 
 static byte storageKey[32] = {0};
 static bool isStorageKeyLoaded = false;
@@ -1138,4 +1139,159 @@ bool deletePasskeyRecord(const String &credentialIdHex) {
 
     xSemaphoreGive(storageMutex);
     return deleted;
+}
+
+static void getStatelessMasterKeys(uint8_t* aesKey, uint8_t* hmacKey) {
+    uint8_t mac[6];
+    if (esp_efuse_mac_get_default(mac) != ESP_OK) {
+        memset(mac, 0xEE, 6);
+    }
+    
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+    
+    // AES key generation
+    mbedtls_md_starts(&ctx);
+    mbedtls_md_update(&ctx, mac, 6);
+    mbedtls_md_update(&ctx, (const uint8_t*)"STATELESS_AES_KEY_SALT", 22);
+    mbedtls_md_finish(&ctx, aesKey);
+
+    // HMAC key generation
+    mbedtls_md_starts(&ctx);
+    mbedtls_md_update(&ctx, mac, 6);
+    mbedtls_md_update(&ctx, (const uint8_t*)"STATELESS_HMAC_KEY_SALT", 23);
+    mbedtls_md_finish(&ctx, hmacKey);
+
+    mbedtls_md_free(&ctx);
+}
+
+bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t userIdLen,
+                             const String &privateKeyHex, int algId, uint8_t *outCredId, size_t &outCredIdLen) {
+    uint8_t aesKey[32], hmacKey[32];
+    getStatelessMasterKeys(aesKey, hmacKey);
+
+    // Compute RP ID Hash
+    uint8_t rpHash[32];
+    mbedtls_md_context_t md_ctx;
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t*)rpId.c_str(), rpId.length());
+    mbedtls_md_finish(&md_ctx, rpHash);
+    mbedtls_md_free(&md_ctx);
+
+    // Prepare Plaintext Payload (144 bytes)
+    uint8_t plaintext[144] = {0};
+    plaintext[0] = 'S'; plaintext[1] = 'T'; plaintext[2] = 'A'; plaintext[3] = 'T'; // Magic header
+
+    int32_t netAlg = (int32_t)algId;
+    plaintext[4] = (netAlg >> 24) & 0xFF;
+    plaintext[5] = (netAlg >> 16) & 0xFF;
+    plaintext[6] = (netAlg >> 8) & 0xFF;
+    plaintext[7] = netAlg & 0xFF;
+
+    memcpy(&plaintext[8], rpHash, 32);
+
+    plaintext[40] = (uint8_t)(userIdLen > 32 ? 32 : userIdLen);
+    if (userId && userIdLen > 0) {
+        memcpy(&plaintext[41], userId, plaintext[40]);
+    }
+
+    uint8_t privBytes[64] = {0};
+    size_t privLen = privateKeyHex.length() / 2;
+    if (privLen > 64) privLen = 64;
+    fromHex(privateKeyHex, privBytes, privLen);
+
+    plaintext[73] = (uint8_t)privLen;
+    memcpy(&plaintext[74], privBytes, privLen);
+
+    // IV and Encryption
+    uint8_t iv[16], iv_copy[16];
+    esp_fill_random(iv, 16);
+    memcpy(iv_copy, iv, 16);
+
+    uint8_t encrypted[144];
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    mbedtls_aes_setkey_enc(&aes, aesKey, 256);
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 144, iv_copy, plaintext, encrypted);
+    mbedtls_aes_free(&aes);
+
+    // Compute HMAC-SHA256 tag
+    uint8_t hmac[32];
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&md_ctx, hmacKey, 32);
+    mbedtls_md_hmac_update(&md_ctx, iv, 16);
+    mbedtls_md_hmac_update(&md_ctx, encrypted, 144);
+    mbedtls_md_hmac_finish(&md_ctx, hmac);
+    mbedtls_md_free(&md_ctx);
+
+    // Assemble Credential ID: IV (16) + Encrypted (144) + HMAC (32) = 192 bytes
+    memcpy(&outCredId[0], iv, 16);
+    memcpy(&outCredId[16], encrypted, 144);
+    memcpy(&outCredId[160], hmac, 32);
+    outCredIdLen = 192;
+
+    return true;
+}
+
+bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const String &rpId,
+                               String &outUserIdHex, String &outPrivateKeyHex, int &outAlgId) {
+    if (credIdLen != 192) return false;
+
+    uint8_t aesKey[32], hmacKey[32];
+    getStatelessMasterKeys(aesKey, hmacKey);
+
+    const uint8_t* iv = &credId[0];
+    const uint8_t* encrypted = &credId[16];
+    const uint8_t* expectedHmac = &credId[160];
+
+    // Verify HMAC
+    uint8_t computedHmac[32];
+    mbedtls_md_context_t md_ctx;
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    mbedtls_md_hmac_starts(&md_ctx, hmacKey, 32);
+    mbedtls_md_hmac_update(&md_ctx, iv, 16);
+    mbedtls_md_hmac_update(&md_ctx, encrypted, 144);
+    mbedtls_md_hmac_finish(&md_ctx, computedHmac);
+    mbedtls_md_free(&md_ctx);
+
+    if (memcmp(expectedHmac, computedHmac, 32) != 0) return false;
+
+    // Decrypt
+    uint8_t plaintext[144], iv_copy[16];
+    memcpy(iv_copy, iv, 16);
+
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    mbedtls_aes_setkey_dec(&aes, aesKey, 256);
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 144, iv_copy, encrypted, plaintext);
+    mbedtls_aes_free(&aes);
+
+    if (plaintext[0] != 'S' || plaintext[1] != 'T' || plaintext[2] != 'A' || plaintext[3] != 'T') return false;
+
+    // Validate RP ID Hash
+    uint8_t expectedRpHash[32];
+    mbedtls_md_init(&md_ctx);
+    mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+    mbedtls_md_starts(&md_ctx);
+    mbedtls_md_update(&md_ctx, (const uint8_t*)rpId.c_str(), rpId.length());
+    mbedtls_md_finish(&md_ctx, expectedRpHash);
+    mbedtls_md_free(&md_ctx);
+
+    if (memcmp(&plaintext[8], expectedRpHash, 32) != 0) return false;
+
+    int32_t netAlg = ((int32_t)plaintext[4] << 24) | ((int32_t)plaintext[5] << 16) | ((int32_t)plaintext[6] << 8) | plaintext[7];
+    outAlgId = (int)netAlg;
+
+    uint8_t uLen = plaintext[40] > 32 ? 32 : plaintext[40];
+    outUserIdHex = toHex(&plaintext[41], uLen);
+
+    uint8_t pLen = plaintext[73] > 64 ? 64 : plaintext[73];
+    outPrivateKeyHex = toHex(&plaintext[74], pLen);
+
+    return true;
 }

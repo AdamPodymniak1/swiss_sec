@@ -6,12 +6,6 @@
 #include "StorageManager.h"
 #include <vector>
 
-#define CTAP2_ERR_NOT_ALLOWED 0x30
-#define CTAP2_ERR_ACTION_TIMEOUT 0x3A
-#define CTAP2_ERR_PIN_NOT_SET 0x35
-#define CTAP2_ERR_UNSUPPORTED_OPTION 0x2B
-#define CTAP2_OK 0x00
-
 static std::vector<String> nextAssertionCreds;
 static size_t nextAssertionIdx = 0;
 static uint8_t nextAssertionClientHash[32] = {0};
@@ -34,6 +28,7 @@ static uint8_t activeAuthToken[32];
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
+bool optionRK = false;
 
 // Stable per-device AAGUID, with a fixed namespace prefix and MAC-derived suffix.
 void initializeDynamicAaguid() {
@@ -477,7 +472,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeUnsignedInt(7); encoder.writeUnsignedInt(8);
 
         // 0x08: maxCredentialIdLength
-        encoder.writeUnsignedInt(8); encoder.writeUnsignedInt(64);
+        encoder.writeUnsignedInt(8); encoder.writeUnsignedInt(MAX_CREDENTIAL_ID_LEN);
 
         // 0x09: transports
         encoder.writeUnsignedInt(9);
@@ -533,7 +528,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         int selectedAlgId = defaultCryptoAlg;
 
         static const size_t MAX_EXCLUDE_CREDENTIALS = 16;
-        uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][64];
+        uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][MAX_CREDENTIAL_ID_LEN];
         size_t excludeCredentialIdLens[MAX_EXCLUDE_CREDENTIALS] = {0};
         size_t excludeCredentialCount = 0;
 
@@ -660,6 +655,22 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                         } else { parser.skipValue(); }
                                     } else { parser.skipValue(); }
                                 }
+                            } else { parser.skipValue(); }
+                        }
+                    } else { parser.skipValue(); }
+                }
+                else if (mapKey == 0x07) { // Options Map
+                    uint8_t optType; uint64_t optElements;
+                    if (parser.readTypeAndValue(optType, optElements) && optType == 5) {
+                        for (uint64_t j = 0; j < optElements; j++) {
+                            char optKey[32] = {0};
+                            if (parser.readTextString(optKey, sizeof(optKey))) {
+                                if (strcmp(optKey, "rk") == 0) {
+                                    uint8_t valType; uint64_t valVal;
+                                    if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                        optionRK = (valVal == 21); // CBOR boolean true = 21
+                                    } else { parser.skipValue(); }
+                                } else { parser.skipValue(); }
                             } else { parser.skipValue(); }
                         }
                     } else { parser.skipValue(); }
@@ -847,20 +858,36 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
-        uint8_t rawCredId[16];
-        for(int i = 0; i < 16; i++) rawCredId[i] = esp_random() & 0xFF;
-
-        String credentialIdHex = toHex(rawCredId, 16);
+        uint8_t rawCredId[256];
+        size_t rawCredIdLen = 0;
         String userIdHex = toHex(userIdRaw, userIdLen);
 
-        if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId)) {
-            showDisplayMessage(1, "SAVE FAILED", "", 0);
-            uint8_t err = 0x21;
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            if (pubKeyData) free(pubKeyData);
-            if (rsaE) free(rsaE);
-            free(responseBuffer);
-            return;
+        if (optionRK) {
+            // Resident Key (Stored on Flash)
+            rawCredIdLen = 16;
+            for(int i = 0; i < 16; i++) rawCredId[i] = esp_random() & 0xFF;
+            String credentialIdHex = toHex(rawCredId, 16);
+
+            if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId)) {
+                showDisplayMessage(1, "SAVE FAILED", "", 0);
+                uint8_t err = 0x21;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                if (pubKeyData) free(pubKeyData);
+                if (rsaE) free(rsaE);
+                free(responseBuffer);
+                return;
+            }
+        } else {
+            // Stateless Credential (Non-Resident Key)
+            if (!wrapStatelessCredential(String(targetRpId), userIdRaw, userIdLen, privateKeyHex, selectedAlgId, rawCredId, rawCredIdLen)) {
+                showDisplayMessage(1, "WRAP FAILED", "", 0);
+                uint8_t err = 0x01;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                if (pubKeyData) free(pubKeyData);
+                if (rsaE) free(rsaE);
+                free(responseBuffer);
+                return;
+            }
         }
 
         responseBuffer[0] = 0x00;
@@ -909,9 +936,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
+        authData[53] = (uint8_t)((rawCredIdLen >> 8) & 0xFF); 
+        authData[54] = (uint8_t)(rawCredIdLen & 0xFF);
+        memcpy(&authData[55], rawCredId, rawCredIdLen);
+
         int authDataOffset = 0;
-        memcpy(&finalAuthData[authDataOffset], authData, 71); 
-        authDataOffset += 71;
+        memcpy(&finalAuthData[authDataOffset], authData, 55 + rawCredIdLen); 
+        authDataOffset += 55 + rawCredIdLen;
 
         if (selectedAlgId == -7) {
             uint8_t coseHeader[10] = {0xA5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20};
@@ -1035,7 +1066,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t hmacSalt2Len = 0;
 
         static const size_t MAX_ALLOW_CREDENTIALS = 32;
-        uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][64] = {0};
+        uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][MAX_CREDENTIAL_ID_LEN] = {0};
         size_t allowCredentialIdLens[MAX_ALLOW_CREDENTIALS] = {0};
         size_t allowCredentialCount = 0;
 
@@ -1155,7 +1186,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 String candidateIdHex = toHex(allowCredentialIds[i], allowCredentialIdLens[i]);
                 String candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex;
                 int candidateAlgId;
-                if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && candidateRpId == String(targetRpId)) {
+
+                // 1. Try unwrapping as a stateless credential
+                if (unwrapStatelessCredential(allowCredentialIds[i], allowCredentialIdLens[i], String(targetRpId),
+                                            candidateUserIdHex, candidatePrivateKeyHex, candidateAlgId)) {
+                    matchedCreds.push_back(candidateIdHex);
+                }
+                // 2. Fall back to resident key storage
+                else if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && candidateRpId == String(targetRpId)) {
                     matchedCreds.push_back(candidateIdHex);
                 }
             }
@@ -1175,7 +1213,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         int storedAlgId;
         
-        if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
+        uint8_t binCredId[256];
+        size_t binCredLen = credentialIdHex.length() / 2;
+        fromHex(credentialIdHex, binCredId, binCredLen);
+
+        // Check if stateless credential first
+        if (unwrapStatelessCredential(binCredId, binCredLen, String(targetRpId), storedUserIdHex, storedPrivateKeyHex, storedAlgId)) {
+            storedRpId = String(targetRpId);
+            storedUserName = "Stateless User";
+        } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
             uint8_t err = 0x2E;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
@@ -1354,11 +1400,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeUnsignedInt(0x01);
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
-        uint8_t binCredId[64]; 
-        size_t binCredLen = credentialIdHex.length() / 2;
-        fromHex(credentialIdHex, binCredId, binCredLen);
         localEncoder.writeByteString(binCredId, binCredLen);
-        localEncoder.writeTextString("type"); 
+        localEncoder.writeTextString("type");
         localEncoder.writeTextString("public-key");
 
         localEncoder.writeUnsignedInt(0x02); 
@@ -1716,8 +1759,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeUnsignedInt(0x01);
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
-        uint8_t binCredId[64]; 
+        uint8_t binCredId[MAX_CREDENTIAL_ID_LEN];
         size_t binCredLen = credentialIdHex.length() / 2;
+        if (binCredLen > sizeof(binCredId)) binCredLen = sizeof(binCredId);
         fromHex(credentialIdHex, binCredId, binCredLen);
         localEncoder.writeByteString(binCredId, binCredLen);
         localEncoder.writeTextString("type"); 

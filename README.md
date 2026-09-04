@@ -238,7 +238,7 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
   * [x] Authenticator Reset (Command `0x07`)
   * [x] Credential Management API (Command `0x0A`)
   * [ ] Bio Enrollment (Command `0x09`)
-  * [ ] Stateless Credentials (Non-Resident Keys support)
+  * [x] Stateless Credentials (Non-Resident Keys support)
 * [ ] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.
 * [ ] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
 * [ ] **X.509 certificate:** Save a verifiable X.509 batch certificate chain to NVS. Add it to .gitignore and add instructions on how to get your own certificate in readme.
