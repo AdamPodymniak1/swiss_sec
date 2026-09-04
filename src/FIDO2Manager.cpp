@@ -445,7 +445,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeMapHeader(4);
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
+        #if USE_FINGERPRINT_SIMULATOR
+        encoder.writeTextString("uv"); encoder.writeBoolean(false);
+        #else
         encoder.writeTextString("uv"); encoder.writeBoolean(true);
+        #endif
         encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
 
         // 0x05: maxMsgSize
