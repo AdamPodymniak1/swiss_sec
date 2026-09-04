@@ -51,5 +51,6 @@ void secureWipe(String &str);
 bool isFidoPinSet();
 void createFidoPin(const String &pin);
 int getFailedFidoPinAttempts();
+void resetFido2System();
 
 #endif

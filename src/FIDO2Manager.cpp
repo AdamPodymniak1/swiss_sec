@@ -5,6 +5,13 @@
 #include "CryptoManager.h"
 #include "StorageManager.h"
 
+#define CTAP2_CMD_AUTHENTICATOR_RESET 0x07
+#define CTAP2_ERR_NOT_ALLOWED 0x30
+#define CTAP2_ERR_ACTION_TIMEOUT 0x3A
+#define CTAP2_ERR_PIN_NOT_SET 0x35
+#define CTAP2_ERR_UNSUPPORTED_OPTION 0x2B
+#define CTAP2_OK 0x00
+
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
 
@@ -119,7 +126,6 @@ uint16_t FIDO2HIDDevice::_onGetDescriptor(uint8_t* dst) {
     return sizeof(fido_report_descriptor);
 }
 
-// Initial HID packets carry 57 bytes; continuation packets carry 59 bytes.
 void FIDO2HIDDevice::sendCtapResponse(uint32_t channel, uint8_t cmd, const uint8_t* data, uint16_t len) {
     uint8_t packet[64] = {0};
     uint16_t offset = 0;
@@ -343,7 +349,6 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
     }
 }
 
-// INIT may allocate a channel; all stateful commands stay on the active channel.
 void FIDO2HIDDevice::processCtapCommand(uint32_t channel, uint8_t cmd, uint8_t* data, uint16_t len) {
     if (cmd == CTAPHID_INIT) {
         if (len < 8) {
@@ -407,34 +412,51 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
     static unsigned long lastFingerprintSuccessTime = 0;
 
-    if (ctap2Cmd == 0x04) {
+    if (ctap2Cmd == 0x04) { // authenticatorGetInfo
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
 
-        encoder.writeMapHeader(8);
+        // Map header set to 9 elements (keys: 1, 3, 4, 5, 6, 7, 8, 9, 10)
+        encoder.writeMapHeader(9);
 
+        // 0x01: versions
         encoder.writeUnsignedInt(1);
         encoder.writeArrayHeader(1);
         encoder.writeTextString("FIDO_2_0");
 
+        // 0x03: aaguid
         encoder.writeUnsignedInt(3);
         initializeDynamicAaguid();
         encoder.writeByteString(dynamicAaguid, 16);
 
+        // 0x04: options map
         encoder.writeUnsignedInt(4);
-        encoder.writeMapHeader(3);
+        encoder.writeMapHeader(4);
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         encoder.writeTextString("uv"); encoder.writeBoolean(true);
+        encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
 
+        // 0x05: maxMsgSize
         encoder.writeUnsignedInt(5); encoder.writeUnsignedInt(8192);
+
+        // 0x06: pinUvAuthProtocols
+        encoder.writeUnsignedInt(6);
+        encoder.writeArrayHeader(1);
+        encoder.writeUnsignedInt(1); // Protocol 1 supported
+
+        // 0x07: maxCredentialCountInList
         encoder.writeUnsignedInt(7); encoder.writeUnsignedInt(8);
+
+        // 0x08: maxCredentialIdLength
         encoder.writeUnsignedInt(8); encoder.writeUnsignedInt(64);
 
+        // 0x09: transports
         encoder.writeUnsignedInt(9);
         encoder.writeArrayHeader(1);
         encoder.writeTextString("usb");
 
+        // 0x0A: algorithms
         encoder.writeUnsignedInt(10);
         encoder.writeArrayHeader(6);
 
@@ -560,7 +582,6 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                     selectedAlgId = defaultCryptoAlg;
                                     foundDefault = true;
                                 } else if (!foundDefault) {
-                                    // Standard fallback priority if the website rejects the user's preferred default
                                     if (currentAlgId == -48 || currentAlgId == -49 || currentAlgId == -50) {
                                         selectedAlgId = currentAlgId;
                                         foundPQC = true;
@@ -770,7 +791,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 unsigned long lastKeepAlive = millis();
                 while (!ctx.done) {
                     if (millis() - lastKeepAlive > 300) {
-                        uint8_t status = 0x02; // 0x02 PROCESSING
+                        uint8_t status = 0x02;
                         sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
                         lastKeepAlive = millis();
                     }
@@ -1341,7 +1362,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         free(responseBuffer);
         return;
     }
-    else if (ctap2Cmd == 0x06) {
+    else if (ctap2Cmd == 0x06) { // authenticatorClientPin
         CborParser parser(data + 1, len - 1);
         uint8_t rootType;
         uint64_t rootElements;
@@ -1394,67 +1415,91 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
 
-        if (subCommand == 0x05) {
+        // Subcommand 0x01: getPINRetries
+        if (subCommand == 0x01) {
             encoder.writeMapHeader(1);
-            encoder.writeUnsignedInt(0x03);
+            encoder.writeUnsignedInt(0x03); // pinRetries key
             encoder.writeUnsignedInt(10 - getFailedFidoPinAttempts());
         } 
+        // Subcommand 0x02: getKeyAgreement
         else if (subCommand == 0x02) {
             uint8_t privKey[32];
             uint8_t pubKey[65];
             generateKeypairP256(privKey, pubKey);
             
             encoder.writeMapHeader(1);
-            encoder.writeUnsignedInt(0x01);
+            encoder.writeUnsignedInt(0x01); // keyAgreement key
             encoder.writeMapHeader(5);
-            encoder.writeUnsignedInt(0x01); encoder.writeUnsignedInt(0x02);
-            encoder.writeUnsignedInt(0x03); encoder.writeNegativeInt(-7);
-            encoder.writeNegativeInt(-1); encoder.writeUnsignedInt(0x01);
-            encoder.writeNegativeInt(-2); encoder.writeByteString(pubKey + 1, 32);
-            encoder.writeNegativeInt(-3); encoder.writeByteString(pubKey + 33, 32);
+            encoder.writeUnsignedInt(0x01); encoder.writeUnsignedInt(0x02); // kty: EC2
+            encoder.writeUnsignedInt(0x03); encoder.writeNegativeInt(-7); // alg: ES256
+            encoder.writeNegativeInt(-1); encoder.writeUnsignedInt(0x01); // crv: P-256
+            encoder.writeNegativeInt(-2); encoder.writeByteString(pubKey + 1, 32); // x
+            encoder.writeNegativeInt(-3); encoder.writeByteString(pubKey + 33, 32); // y
         }
+        // Subcommand 0x03: setPIN
         else if (subCommand == 0x03) {
             if (isFidoPinSet()) {
-                uint8_t err = 0x2E;
+                uint8_t err = CTAP2_ERR_NOT_ALLOWED;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                 free(responseBuffer);
                 return;
             }
-            String decryptedPin = toHex(newPinEnc, 4); 
+            String decryptedPin = toHex(newPinEnc, newPinEncLen > 0 ? newPinEncLen : 4); 
             createFidoPin(decryptedPin);
             encoder.writeMapHeader(0);
         }
+        // Subcommand 0x04: changePIN
         else if (subCommand == 0x04) {
             if (!isFidoPinSet()) {
-                uint8_t err = 0x2E;
+                uint8_t err = CTAP2_ERR_PIN_NOT_SET;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                 free(responseBuffer);
                 return;
             }
-            String decryptedNewPin = toHex(newPinEnc, 4);
+            String decryptedNewPin = toHex(newPinEnc, newPinEncLen > 0 ? newPinEncLen : 4);
             createFidoPin(decryptedNewPin);
             encoder.writeMapHeader(0);
         }
-        else if (subCommand == 0x01) {
+        // Subcommand 0x05: getPINToken / getPinUvAuthToken
+        else if (subCommand == 0x05) {
             if (!isFidoPinSet()) {
-                uint8_t err = 0x2E;
+                uint8_t err = CTAP2_ERR_PIN_NOT_SET;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                 free(responseBuffer);
                 return;
             }
             encoder.writeMapHeader(1);
-            encoder.writeUnsignedInt(0x02);
+            encoder.writeUnsignedInt(0x02); // pinToken key
             uint8_t mockToken[32] = {0};
+            esp_fill_random(mockToken, 32);
             encoder.writeByteString(mockToken, 32);
         } 
         else {
-            uint8_t err = 0x2B;
+            uint8_t err = CTAP2_ERR_UNSUPPORTED_OPTION;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
             return;
         }
 
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == CTAP2_CMD_AUTHENTICATOR_RESET) { // 0x07 authenticatorReset
+        showDisplayMessage(1, "RESET FIDO2", "TOUCH SENSOR", 0);
+
+        if (!fidoVerifyFingerprint()) {
+            uint8_t err = CTAP2_ERR_NOT_ALLOWED;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        resetFido2System();
+
+        responseBuffer[0] = CTAP2_OK;
+        sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1);
+        showDisplayMessage(1, "RESET SUCCESS", "", 0);
         free(responseBuffer);
         return;
     }

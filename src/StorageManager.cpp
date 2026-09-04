@@ -984,3 +984,16 @@ int getFailedFidoPinAttempts() {
     xSemaphoreGive(storageMutex);
     return val.toInt();
 }
+
+void resetFido2System() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    
+    if (SPIFFS.exists("/passkeys.json")) SPIFFS.remove("/passkeys.json");
+    if (SPIFFS.exists("/passkeys.bin")) SPIFFS.remove("/passkeys.bin");
+    if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
+    if (SPIFFS.exists("/fido_pin.txt")) SPIFFS.remove("/fido_pin.txt");
+    if (SPIFFS.exists("/fido_fail.txt")) SPIFFS.remove("/fido_fail.txt");
+    
+    xSemaphoreGive(storageMutex);
+    CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
+}
