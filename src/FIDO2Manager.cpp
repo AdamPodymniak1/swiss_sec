@@ -4,13 +4,24 @@
 #include "FingerprintManager.h"
 #include "CryptoManager.h"
 #include "StorageManager.h"
+#include <vector>
 
-#define CTAP2_CMD_AUTHENTICATOR_RESET 0x07
 #define CTAP2_ERR_NOT_ALLOWED 0x30
 #define CTAP2_ERR_ACTION_TIMEOUT 0x3A
 #define CTAP2_ERR_PIN_NOT_SET 0x35
 #define CTAP2_ERR_UNSUPPORTED_OPTION 0x2B
 #define CTAP2_OK 0x00
+
+static std::vector<String> nextAssertionCreds;
+static size_t nextAssertionIdx = 0;
+static uint8_t nextAssertionClientHash[32] = {0};
+static String nextAssertionRpId = "";
+static bool nextAssertionOptionUV = false;
+static bool nextAssertionExtReq = false;
+static uint8_t nextAssertionSalt1[32] = {0};
+static uint8_t nextAssertionSalt2[32] = {0};
+static size_t nextAssertionSalt1Len = 0;
+static size_t nextAssertionSalt2Len = 0;
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
@@ -1121,43 +1132,51 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
-        String credentialIdHex = "";
+        std::vector<String> matchedCreds;
         if (allowCredentialCount > 0) {
             for (size_t i = 0; i < allowCredentialCount; i++) {
                 String candidateIdHex = toHex(allowCredentialIds[i], allowCredentialIdLens[i]);
                 String candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex;
                 int candidateAlgId;
-                if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex,
-                                     candidateUserName, candidatePrivateKeyHex, candidateAlgId) &&
-                    candidateRpId == String(targetRpId)) {
-                    credentialIdHex = candidateIdHex;
-                    break;
+                if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && candidateRpId == String(targetRpId)) {
+                    matchedCreds.push_back(candidateIdHex);
                 }
             }
-
-            if (credentialIdHex == "") {
-                uint8_t err = 0x2E;
-                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-                free(responseBuffer);
-                return;
-            }
         } else {
-            credentialIdHex = findCredentialIdByRpAndUser(String(targetRpId), "");
-            if (credentialIdHex == "") {
-                uint8_t err = 0x2E;
-                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-                free(responseBuffer);
-                return;
-            }
+            matchedCreds = findAllCredentialsByRp(String(targetRpId));
         }
+
+        if (matchedCreds.empty()) {
+            uint8_t err = 0x2E;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        String credentialIdHex = matchedCreds[0];
 
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         int storedAlgId;
+        
         if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
             uint8_t err = 0x2E;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
             return;
+        }
+
+        nextAssertionCreds = matchedCreds;
+        nextAssertionIdx = 1;
+        nextAssertionRpId = String(targetRpId);
+        memcpy(nextAssertionClientHash, clientDataHash, 32);
+        nextAssertionOptionUV = optionUV;
+        nextAssertionExtReq = extensionRequested;
+        
+        if (extensionRequested) {
+            memcpy(nextAssertionSalt1, hmacSalt1, 32);
+            nextAssertionSalt1Len = hmacSalt1Len;
+            memcpy(nextAssertionSalt2, hmacSalt2, 32);
+            nextAssertionSalt2Len = hmacSalt2Len;
         }
 
         bool biometricVerified = false;
@@ -1309,31 +1328,47 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localRespBuf[0] = 0x00;
 
         CborEncoder localEncoder(&localRespBuf[1], 8191);
-
-        localEncoder.writeMapHeader(extensionRequested ? 5 : 4);
+        
+        size_t mapItems = 4;
+        if (extensionRequested) mapItems++;
+        if (matchedCreds.size() > 1) mapItems++;
+        localEncoder.writeMapHeader(mapItems);
 
         localEncoder.writeUnsignedInt(0x01);
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
-        uint8_t binCredId[64]; size_t binCredLen = credentialIdHex.length() / 2;
+        uint8_t binCredId[64]; 
+        size_t binCredLen = credentialIdHex.length() / 2;
         fromHex(credentialIdHex, binCredId, binCredLen);
         localEncoder.writeByteString(binCredId, binCredLen);
-        localEncoder.writeTextString("type"); localEncoder.writeTextString("public-key");
+        localEncoder.writeTextString("type"); 
+        localEncoder.writeTextString("public-key");
 
-        localEncoder.writeUnsignedInt(0x02); localEncoder.writeByteString(authData, 37);
+        localEncoder.writeUnsignedInt(0x02); 
+        localEncoder.writeByteString(authData, 37);
 
-        localEncoder.writeUnsignedInt(0x03); localEncoder.writeByteString(signatureASN1, finalSigLen);
+        localEncoder.writeUnsignedInt(0x03); 
+        localEncoder.writeByteString(signatureASN1, finalSigLen);
 
-        localEncoder.writeUnsignedInt(0x04); localEncoder.writeMapHeader(3);
+        localEncoder.writeUnsignedInt(0x04); 
+        localEncoder.writeMapHeader(3);
         localEncoder.writeTextString("id");
-        uint8_t rawUserIdBytes[64]; size_t parsedUserIdLen = storedUserIdHex.length() / 2;
+        uint8_t rawUserIdBytes[64]; 
+        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
         fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
         localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeTextString("name"); localEncoder.writeTextString(storedUserName.c_str());
-        localEncoder.writeTextString("displayName"); localEncoder.writeTextString(storedUserName.c_str());
+        localEncoder.writeTextString("name"); 
+        localEncoder.writeTextString(storedUserName.c_str());
+        localEncoder.writeTextString("displayName"); 
+        localEncoder.writeTextString(storedUserName.c_str());
+
+        if (matchedCreds.size() > 1) {
+            localEncoder.writeUnsignedInt(0x05);
+            localEncoder.writeUnsignedInt(matchedCreds.size());
+        }
 
         if (extensionRequested) {
-            localEncoder.writeUnsignedInt(0x05);
+            localEncoder.writeUnsignedInt(0x08);
             localEncoder.writeMapHeader(1);
             localEncoder.writeTextString("hmac-secret");
 
@@ -1485,7 +1520,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         free(responseBuffer);
         return;
     }
-    else if (ctap2Cmd == CTAP2_CMD_AUTHENTICATOR_RESET) { // 0x07 authenticatorReset
+    else if (ctap2Cmd == 0x07) { // 0x07 authenticatorReset
         showDisplayMessage(1, "RESET FIDO2", "TOUCH SENSOR", 0);
 
         if (!fidoVerifyFingerprint()) {
@@ -1500,6 +1535,174 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = CTAP2_OK;
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1);
         showDisplayMessage(1, "RESET SUCCESS", "", 0);
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == 0x08) {
+        if (nextAssertionIdx >= nextAssertionCreds.size()) {
+            uint8_t err = 0x2E;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            nextAssertionCreds.clear();
+            return;
+        }
+        
+        String credentialIdHex = nextAssertionCreds[nextAssertionIdx++];
+        String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
+        int storedAlgId;
+        
+        if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
+            uint8_t err = 0x2E;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        uint8_t authData[37] = {0};
+        mbedtls_md_context_t sha_ctx;
+        mbedtls_md_init(&sha_ctx);
+        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+        mbedtls_md_starts(&sha_ctx);
+        mbedtls_md_update(&sha_ctx, (const unsigned char*)nextAssertionRpId.c_str(), nextAssertionRpId.length());
+        mbedtls_md_finish(&sha_ctx, authData);
+        mbedtls_md_free(&sha_ctx);
+
+        uint8_t flags = 0x01;
+        if (nextAssertionOptionUV) flags |= 0x04;
+        if (nextAssertionExtReq) flags |= 0x80;
+        authData[32] = flags;
+
+        uint32_t currentSignCount = loadPersistedSignCount() + 1;
+        savePersistedSignCount(currentSignCount);
+
+        authData[33] = (currentSignCount >> 24) & 0xFF;
+        authData[34] = (currentSignCount >> 16) & 0xFF;
+        authData[35] = (currentSignCount >> 8) & 0xFF;
+        authData[36] = currentSignCount & 0xFF;
+
+        uint8_t signBuffer[69];
+        memcpy(signBuffer, authData, 37);
+        memcpy(signBuffer + 37, nextAssertionClientHash, 32);
+
+        uint8_t* signatureASN1 = nullptr;
+        size_t finalSigLen = 0;
+
+        struct AsyncSignAuth {
+            int alg; String pk; uint8_t* msg; size_t mLen; 
+            uint8_t** sig; size_t* sLen; volatile bool done; bool res;
+        } sCtx = {storedAlgId, storedPrivateKeyHex, signBuffer, sizeof(signBuffer), &signatureASN1, &finalSigLen, false, false};
+
+        xTaskCreatePinnedToCore([](void* p){
+            AsyncSignAuth* c = (AsyncSignAuth*)p;
+            c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
+            c->done = true;
+            vTaskDelete(NULL);
+        }, "PQC_SignAuth2", 131072, &sCtx, 1, NULL, 1);
+
+        unsigned long lastKeepAliveAuth = millis();
+        while (!sCtx.done) {
+            if (millis() - lastKeepAliveAuth > 300) {
+                uint8_t status = 0x02;
+                sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                lastKeepAliveAuth = millis();
+            }
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+        }
+
+        if (!sCtx.res) {
+            memset(signBuffer, 0, sizeof(signBuffer));
+            uint8_t err = 0x01;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        uint8_t hmacOutput1[32] = {0};
+        uint8_t hmacOutput2[32] = {0};
+        if (nextAssertionExtReq && nextAssertionSalt1Len == 32) {
+            uint8_t rawKeyBytes[32] = {0};
+            fromHex(storedPrivateKeyHex, rawKeyBytes, 32);
+
+            mbedtls_md_init(&sha_ctx);
+            mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+            mbedtls_md_hmac_starts(&sha_ctx, rawKeyBytes, 32);
+            mbedtls_md_hmac_update(&sha_ctx, nextAssertionSalt1, 32);
+            mbedtls_md_hmac_finish(&sha_ctx, hmacOutput1);
+            mbedtls_md_free(&sha_ctx);
+
+            if (nextAssertionSalt2Len == 32) {
+                mbedtls_md_init(&sha_ctx);
+                mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+                mbedtls_md_hmac_starts(&sha_ctx, rawKeyBytes, 32);
+                mbedtls_md_hmac_update(&sha_ctx, nextAssertionSalt2, 32);
+                mbedtls_md_hmac_finish(&sha_ctx, hmacOutput2);
+                mbedtls_md_free(&sha_ctx);
+            }
+            memset(rawKeyBytes, 0, 32);
+        }
+
+        uint8_t* localRespBuf = (uint8_t*)malloc(8192);
+        if (!localRespBuf) {
+            uint8_t err = 0x01;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(signatureASN1);
+            free(responseBuffer);
+            return;
+        }
+        memset(localRespBuf, 0, 8192);
+        localRespBuf[0] = 0x00;
+
+        CborEncoder localEncoder(&localRespBuf[1], 8191);
+        localEncoder.writeMapHeader(nextAssertionExtReq ? 5 : 4);
+
+        localEncoder.writeUnsignedInt(0x01);
+        localEncoder.writeMapHeader(2);
+        localEncoder.writeTextString("id");
+        uint8_t binCredId[64]; 
+        size_t binCredLen = credentialIdHex.length() / 2;
+        fromHex(credentialIdHex, binCredId, binCredLen);
+        localEncoder.writeByteString(binCredId, binCredLen);
+        localEncoder.writeTextString("type"); 
+        localEncoder.writeTextString("public-key");
+
+        localEncoder.writeUnsignedInt(0x02); 
+        localEncoder.writeByteString(authData, 37);
+
+        localEncoder.writeUnsignedInt(0x03); 
+        localEncoder.writeByteString(signatureASN1, finalSigLen);
+
+        localEncoder.writeUnsignedInt(0x04); 
+        localEncoder.writeMapHeader(3);
+        localEncoder.writeTextString("id");
+        uint8_t rawUserIdBytes[64]; 
+        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
+        fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
+        localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
+        localEncoder.writeTextString("name"); 
+        localEncoder.writeTextString(storedUserName.c_str());
+        localEncoder.writeTextString("displayName"); 
+        localEncoder.writeTextString(storedUserName.c_str());
+
+        if (nextAssertionExtReq) {
+            localEncoder.writeUnsignedInt(0x08);
+            localEncoder.writeMapHeader(1);
+            localEncoder.writeTextString("hmac-secret");
+
+            if (nextAssertionSalt2Len == 32) {
+                uint8_t dualHmac[64];
+                memcpy(dualHmac, hmacOutput1, 32);
+                memcpy(dualHmac + 32, hmacOutput2, 32);
+                localEncoder.writeByteString(dualHmac, 64);
+            } else {
+                localEncoder.writeByteString(hmacOutput1, 32);
+            }
+        }
+
+        size_t finalPayloadSize = localEncoder.getOffset() + 1;
+        sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize);
+
+        free(signatureASN1);
+        free(localRespBuf);
         free(responseBuffer);
         return;
     }

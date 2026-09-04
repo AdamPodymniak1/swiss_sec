@@ -997,3 +997,29 @@ void resetFido2System() {
     xSemaphoreGive(storageMutex);
     CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
 }
+
+std::vector<String> findAllCredentialsByRp(const String &rpId) {
+    std::vector<String> results;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/passkeys.bin", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return results;
+    }
+    while (file.available()) {
+        uint8_t status;
+        if (file.read(&status, 1) != 1) break;
+        file.seek(4, SeekCur);
+        String cid = readSpiffsString(file);
+        String rp = readSpiffsString(file);
+        uint16_t payLen;
+        file.read((uint8_t*)&payLen, 2);
+        if (status == 1 && rp == rpId) {
+            results.push_back(cid);
+        }
+        file.seek(payLen, SeekCur);
+    }
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return results;
+}

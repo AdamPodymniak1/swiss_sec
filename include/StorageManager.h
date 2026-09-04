@@ -2,6 +2,7 @@
 #define STORAGE_MANAGER_H
 
 #include <Arduino.h>
+#include <vector>
 
 // Storage APIs are split by PIN vault records, resident passkeys, and TOTP seeds.
 void deriveStorageKey(const String &pin);
@@ -52,5 +53,6 @@ bool isFidoPinSet();
 void createFidoPin(const String &pin);
 int getFailedFidoPinAttempts();
 void resetFido2System();
+std::vector<String> findAllCredentialsByRp(const String &rpId);
 
 #endif
