@@ -233,9 +233,9 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 * [x] **Device Detection:** Implement automatic detection routines to verify when the ESP32-S3 is plugged in for browser plugin communication.
 * [x] **Connection Broadcasting:** Broadcast FIDO2 connection status messages when requested by web applications.
 * [ ] **Advanced CTAP2 Commands:**
-  * [ ] Client PIN (Command `0x06`)
-  * [ ] GetNextAssertion (Command `0x08`)
-  * [ ] Authenticator Reset (Command `0x07`)
+  * [x] Client PIN (Command `0x06`)
+  * [x] GetNextAssertion (Command `0x08`)
+  * [x] Authenticator Reset (Command `0x07`)
   * [ ] Credential Management API (Command `0x0A`)
   * [ ] Stateless Credentials (Non-Resident Keys support)
 * [ ] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.

@@ -1427,18 +1427,27 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             if (parser.readTypeAndValue(keyType, mapKey) && keyType == 0) {
                 if (mapKey == 0x01) {
                     uint8_t valType; uint64_t val;
-                    if (parser.readTypeAndValue(valType, val)) pinProtocol = val;
+                    if (!parser.readTypeAndValue(valType, val)) parser.skipValue();
+                    else pinProtocol = val;
                 } else if (mapKey == 0x02) {
                     uint8_t valType;
-                    parser.readTypeAndValue(valType, subCommand);
+                    if (!parser.readTypeAndValue(valType, subCommand)) parser.skipValue();
                 } else if (mapKey == 0x03) {
-                    parser.readByteString(keyAgreement, sizeof(keyAgreement), keyAgreementLen);
+                    if (!parser.readByteString(keyAgreement, sizeof(keyAgreement), keyAgreementLen)) {
+                        parser.skipValue();
+                    }
                 } else if (mapKey == 0x04) {
-                    parser.readByteString(pinAuth, sizeof(pinAuth), pinAuthLen);
+                    if (!parser.readByteString(pinAuth, sizeof(pinAuth), pinAuthLen)) {
+                        parser.skipValue();
+                    }
                 } else if (mapKey == 0x05) {
-                    parser.readByteString(newPinEnc, sizeof(newPinEnc), newPinEncLen);
+                    if (!parser.readByteString(newPinEnc, sizeof(newPinEnc), newPinEncLen)) {
+                        parser.skipValue();
+                    }
                 } else if (mapKey == 0x06) {
-                    parser.readByteString(pinHashEnc, sizeof(pinHashEnc), pinHashEncLen);
+                    if (!parser.readByteString(pinHashEnc, sizeof(pinHashEnc), pinHashEncLen)) {
+                        parser.skipValue();
+                    }
                 } else {
                     parser.skipValue();
                 }
@@ -1523,7 +1532,39 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
     else if (ctap2Cmd == 0x07) { // 0x07 authenticatorReset
         showDisplayMessage(1, "RESET FIDO2", "TOUCH SENSOR", 0);
 
-        if (!fidoVerifyFingerprint()) {
+        bool biometricVerified = false;
+        bool biometricCanceled = false;
+        unsigned long authStart = millis();
+        unsigned long lastKeepAlive = 0;
+
+        while (millis() - authStart < 15000) {
+            if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                hasPendingCommand = false;
+                biometricCanceled = true;
+                break;
+            }
+            if (millis() - lastKeepAlive > 500) {
+                uint8_t status = 0x02;
+                sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                lastKeepAlive = millis();
+            }
+            if (fidoVerifyFingerprint()) {
+                biometricVerified = true;
+                break;
+            }
+            delay(50);
+        }
+
+        if (biometricCanceled) {
+            showDisplayMessage(1, "CANCELLED", "", 0);
+            uint8_t err = 0x2D;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        if (!biometricVerified) {
+            showDisplayMessage(1, "TIMEOUT", "", 0);
             uint8_t err = CTAP2_ERR_NOT_ALLOWED;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
