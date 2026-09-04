@@ -1181,9 +1181,15 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
     mbedtls_md_finish(&md_ctx, rpHash);
     mbedtls_md_free(&md_ctx);
 
-    // Prepare Plaintext Payload (144 bytes)
-    uint8_t plaintext[144] = {0};
-    plaintext[0] = 'S'; plaintext[1] = 'T'; plaintext[2] = 'A'; plaintext[3] = 'T'; // Magic header
+    size_t privLen = privateKeyHex.length() / 2;
+    size_t payloadBaseLen = 75 + privLen;
+    size_t paddedLen = (payloadBaseLen + 15) & ~15; // Round up to nearest 16 for CBC padding
+
+    uint8_t* plaintext = (uint8_t*)calloc(1, paddedLen);
+    if (!plaintext) return false;
+
+    // Magic header
+    plaintext[0] = 'S'; plaintext[1] = 'T'; plaintext[2] = 'A'; plaintext[3] = 'T'; 
 
     int32_t netAlg = (int32_t)algId;
     plaintext[4] = (netAlg >> 24) & 0xFF;
@@ -1198,24 +1204,23 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
         memcpy(&plaintext[41], userId, plaintext[40]);
     }
 
-    uint8_t privBytes[64] = {0};
-    size_t privLen = privateKeyHex.length() / 2;
-    if (privLen > 64) privLen = 64;
-    fromHex(privateKeyHex, privBytes, privLen);
-
-    plaintext[73] = (uint8_t)privLen;
-    memcpy(&plaintext[74], privBytes, privLen);
+    // Use 16-bit length for massive ML-DSA keys
+    plaintext[73] = (privLen >> 8) & 0xFF;
+    plaintext[74] = privLen & 0xFF;
+    fromHex(privateKeyHex, &plaintext[75], privLen);
 
     // IV and Encryption
     uint8_t iv[16], iv_copy[16];
     esp_fill_random(iv, 16);
     memcpy(iv_copy, iv, 16);
 
-    uint8_t encrypted[144];
+    uint8_t* encrypted = (uint8_t*)malloc(paddedLen);
+    if (!encrypted) { free(plaintext); return false; }
+
     mbedtls_aes_context aes;
     mbedtls_aes_init(&aes);
     mbedtls_aes_setkey_enc(&aes, aesKey, 256);
-    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, 144, iv_copy, plaintext, encrypted);
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, iv_copy, plaintext, encrypted);
     mbedtls_aes_free(&aes);
 
     // Compute HMAC-SHA256 tag
@@ -1224,29 +1229,34 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
     mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
     mbedtls_md_hmac_starts(&md_ctx, hmacKey, 32);
     mbedtls_md_hmac_update(&md_ctx, iv, 16);
-    mbedtls_md_hmac_update(&md_ctx, encrypted, 144);
+    mbedtls_md_hmac_update(&md_ctx, encrypted, paddedLen);
     mbedtls_md_hmac_finish(&md_ctx, hmac);
     mbedtls_md_free(&md_ctx);
 
-    // Assemble Credential ID: IV (16) + Encrypted (144) + HMAC (32) = 192 bytes
+    // Assemble Credential ID: IV (16) + Encrypted (paddedLen) + HMAC (32)
     memcpy(&outCredId[0], iv, 16);
-    memcpy(&outCredId[16], encrypted, 144);
-    memcpy(&outCredId[160], hmac, 32);
-    outCredIdLen = 192;
+    memcpy(&outCredId[16], encrypted, paddedLen);
+    memcpy(&outCredId[16 + paddedLen], hmac, 32);
+    outCredIdLen = 16 + paddedLen + 32;
 
+    free(plaintext);
+    free(encrypted);
     return true;
 }
 
 bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const String &rpId,
                                String &outUserIdHex, String &outPrivateKeyHex, int &outAlgId) {
-    if (credIdLen != 192) return false;
+    if (credIdLen < 123) return false; // Minimum size validation
 
     uint8_t aesKey[32], hmacKey[32];
     getStatelessMasterKeys(aesKey, hmacKey);
 
+    size_t encryptedLen = credIdLen - 48; // Total minus IV(16) and HMAC(32)
+    if (encryptedLen % 16 != 0) return false;
+
     const uint8_t* iv = &credId[0];
     const uint8_t* encrypted = &credId[16];
-    const uint8_t* expectedHmac = &credId[160];
+    const uint8_t* expectedHmac = &credId[16 + encryptedLen];
 
     // Verify HMAC
     uint8_t computedHmac[32];
@@ -1255,23 +1265,29 @@ bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const St
     mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
     mbedtls_md_hmac_starts(&md_ctx, hmacKey, 32);
     mbedtls_md_hmac_update(&md_ctx, iv, 16);
-    mbedtls_md_hmac_update(&md_ctx, encrypted, 144);
+    mbedtls_md_hmac_update(&md_ctx, encrypted, encryptedLen);
     mbedtls_md_hmac_finish(&md_ctx, computedHmac);
     mbedtls_md_free(&md_ctx);
 
     if (memcmp(expectedHmac, computedHmac, 32) != 0) return false;
 
     // Decrypt
-    uint8_t plaintext[144], iv_copy[16];
+    uint8_t* plaintext = (uint8_t*)malloc(encryptedLen);
+    if (!plaintext) return false;
+
+    uint8_t iv_copy[16];
     memcpy(iv_copy, iv, 16);
 
     mbedtls_aes_context aes;
     mbedtls_aes_init(&aes);
     mbedtls_aes_setkey_dec(&aes, aesKey, 256);
-    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, 144, iv_copy, encrypted, plaintext);
+    mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, encryptedLen, iv_copy, encrypted, plaintext);
     mbedtls_aes_free(&aes);
 
-    if (plaintext[0] != 'S' || plaintext[1] != 'T' || plaintext[2] != 'A' || plaintext[3] != 'T') return false;
+    if (plaintext[0] != 'S' || plaintext[1] != 'T' || plaintext[2] != 'A' || plaintext[3] != 'T') {
+        free(plaintext);
+        return false;
+    }
 
     // Validate RP ID Hash
     uint8_t expectedRpHash[32];
@@ -1282,7 +1298,10 @@ bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const St
     mbedtls_md_finish(&md_ctx, expectedRpHash);
     mbedtls_md_free(&md_ctx);
 
-    if (memcmp(&plaintext[8], expectedRpHash, 32) != 0) return false;
+    if (memcmp(&plaintext[8], expectedRpHash, 32) != 0) {
+        free(plaintext);
+        return false;
+    }
 
     int32_t netAlg = ((int32_t)plaintext[4] << 24) | ((int32_t)plaintext[5] << 16) | ((int32_t)plaintext[6] << 8) | plaintext[7];
     outAlgId = (int)netAlg;
@@ -1290,8 +1309,17 @@ bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const St
     uint8_t uLen = plaintext[40] > 32 ? 32 : plaintext[40];
     outUserIdHex = toHex(&plaintext[41], uLen);
 
-    uint8_t pLen = plaintext[73] > 64 ? 64 : plaintext[73];
-    outPrivateKeyHex = toHex(&plaintext[74], pLen);
+    // Read 16-bit key length 
+    uint16_t pLen = (plaintext[73] << 8) | plaintext[74];
+    
+    // Bounds check to avoid reading past CBC padding
+    if (75 + pLen > encryptedLen) {
+        free(plaintext);
+        return false;
+    }
+    
+    outPrivateKeyHex = toHex(&plaintext[75], pLen);
 
+    free(plaintext);
     return true;
 }

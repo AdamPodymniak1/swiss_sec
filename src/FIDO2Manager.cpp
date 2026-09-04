@@ -28,7 +28,6 @@ static uint8_t activeAuthToken[32];
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
-bool optionRK;
 
 // Stable per-device AAGUID, with a fixed namespace prefix and MAC-derived suffix.
 void initializeDynamicAaguid() {
@@ -1438,27 +1437,19 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             localEncoder.writeUnsignedInt(0x08);
             localEncoder.writeMapHeader(1);
             localEncoder.writeTextString("hmac-secret");
-
             if (hmacSalt2Len == 32) {
-                uint8_t dualHmac[64];
-                memcpy(dualHmac, hmacOutput1, 32);
-                memcpy(dualHmac + 32, hmacOutput2, 32);
-                localEncoder.writeByteString(dualHmac, 64);
+                uint8_t combined[64];
+                memcpy(combined, hmacOutput1, 32);
+                memcpy(combined + 32, hmacOutput2, 32);
+                localEncoder.writeByteString(combined, 64);
             } else {
                 localEncoder.writeByteString(hmacOutput1, 32);
             }
         }
 
-        size_t finalPayloadSize = localEncoder.getOffset() + 1;
-        sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize);
+        sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, 1 + localEncoder.getOffset());
+        showDisplayMessage(1, "ASSERTION SUCCESS", "", 0);
 
-        #if defined(ARDUINO_ARCH_ESP32)
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        #else
-            delay(10);
-        #endif
-
-        showDisplayMessage(1, "VERIFIED", "", 0);
         free(signatureASN1);
         free(localRespBuf);
         free(responseBuffer);
@@ -1682,24 +1673,34 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         free(responseBuffer);
         return;
     }
-    else if (ctap2Cmd == 0x08) {
+    else if (ctap2Cmd == 0x08) { // authenticatorGetNextAssertion
         if (nextAssertionIdx >= nextAssertionCreds.size()) {
-            uint8_t err = 0x2E;
+            uint8_t err = 0x2C; // CTAP2_ERR_NOT_ALLOWED
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
-            nextAssertionCreds.clear();
             return;
         }
-        
-        String credentialIdHex = nextAssertionCreds[nextAssertionIdx++];
+
+        String credentialIdHex = nextAssertionCreds[nextAssertionIdx];
+        nextAssertionIdx++;
+
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         int storedAlgId;
-        
-        if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
-            uint8_t err = 0x2E;
-            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-            free(responseBuffer);
-            return;
+
+        uint8_t binCredId[256];
+        size_t binCredLen = credentialIdHex.length() / 2;
+        fromHex(credentialIdHex, binCredId, binCredLen);
+
+        if (!unwrapStatelessCredential(binCredId, binCredLen, nextAssertionRpId, storedUserIdHex, storedPrivateKeyHex, storedAlgId)) {
+            if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
+                uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+        } else {
+            storedRpId = nextAssertionRpId;
+            storedUserName = "Stateless User";
         }
 
         uint8_t authData[37] = {0};
@@ -1711,8 +1712,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
-        uint8_t flags = 0x05;
-        if (nextAssertionExtReq) { flags |= 0x80; }
+        uint8_t flags = 0x01;
+        if (nextAssertionOptionUV) flags |= 0x04;
+        if (nextAssertionExtReq) flags |= 0x80;
         authData[32] = flags;
 
         uint32_t currentSignCount = loadPersistedSignCount() + 1;
@@ -1721,7 +1723,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         authData[33] = (currentSignCount >> 24) & 0xFF;
         authData[34] = (currentSignCount >> 16) & 0xFF;
         authData[35] = (currentSignCount >> 8) & 0xFF;
-        authData[36] = currentSignCount & 0xFF;
+        authData[36] = (currentSignCount) & 0xFF;
 
         uint8_t signBuffer[69];
         memcpy(signBuffer, authData, 37);
@@ -1731,7 +1733,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t finalSigLen = 0;
 
         struct AsyncSignAuth {
-            int alg; String pk; uint8_t* msg; size_t mLen; 
+            int alg; String pk; uint8_t* msg; size_t mLen;
             uint8_t** sig; size_t* sLen; volatile bool done; bool res;
         } sCtx = {storedAlgId, storedPrivateKeyHex, signBuffer, sizeof(signBuffer), &signatureASN1, &finalSigLen, false, false};
 
@@ -1740,7 +1742,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
             c->done = true;
             vTaskDelete(NULL);
-        }, "PQC_SignAuth2", 131072, &sCtx, 1, NULL, 1);
+        }, "PQC_SignAuthNext", 131072, &sCtx, 1, NULL, 1);
 
         unsigned long lastKeepAliveAuth = millis();
         while (!sCtx.done) {
@@ -1753,7 +1755,6 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         if (!sCtx.res) {
-            memset(signBuffer, 0, sizeof(signBuffer));
             uint8_t err = 0x01;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
@@ -1796,55 +1797,50 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localRespBuf[0] = 0x00;
 
         CborEncoder localEncoder(&localRespBuf[1], 8191);
-        localEncoder.writeMapHeader(nextAssertionExtReq ? 5 : 4);
+        size_t mapItems = 4;
+        if (nextAssertionExtReq) mapItems++;
+        localEncoder.writeMapHeader(mapItems);
 
         localEncoder.writeUnsignedInt(0x01);
         localEncoder.writeMapHeader(2);
         localEncoder.writeTextString("id");
-        uint8_t binCredId[MAX_CREDENTIAL_ID_LEN];
-        size_t binCredLen = credentialIdHex.length() / 2;
-        if (binCredLen > sizeof(binCredId)) binCredLen = sizeof(binCredId);
-        fromHex(credentialIdHex, binCredId, binCredLen);
         localEncoder.writeByteString(binCredId, binCredLen);
-        localEncoder.writeTextString("type"); 
+        localEncoder.writeTextString("type");
         localEncoder.writeTextString("public-key");
 
-        localEncoder.writeUnsignedInt(0x02); 
+        localEncoder.writeUnsignedInt(0x02);
         localEncoder.writeByteString(authData, 37);
 
-        localEncoder.writeUnsignedInt(0x03); 
+        localEncoder.writeUnsignedInt(0x03);
         localEncoder.writeByteString(signatureASN1, finalSigLen);
 
-        localEncoder.writeUnsignedInt(0x04); 
+        localEncoder.writeUnsignedInt(0x04);
         localEncoder.writeMapHeader(3);
         localEncoder.writeTextString("id");
-        uint8_t rawUserIdBytes[64]; 
+        uint8_t rawUserIdBytes[64];
         size_t parsedUserIdLen = storedUserIdHex.length() / 2;
         fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
         localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeTextString("name"); 
+        localEncoder.writeTextString("name");
         localEncoder.writeTextString(storedUserName.c_str());
-        localEncoder.writeTextString("displayName"); 
+        localEncoder.writeTextString("displayName");
         localEncoder.writeTextString(storedUserName.c_str());
 
         if (nextAssertionExtReq) {
             localEncoder.writeUnsignedInt(0x08);
             localEncoder.writeMapHeader(1);
             localEncoder.writeTextString("hmac-secret");
-
             if (nextAssertionSalt2Len == 32) {
-                uint8_t dualHmac[64];
-                memcpy(dualHmac, hmacOutput1, 32);
-                memcpy(dualHmac + 32, hmacOutput2, 32);
-                localEncoder.writeByteString(dualHmac, 64);
+                uint8_t combined[64];
+                memcpy(combined, hmacOutput1, 32);
+                memcpy(combined + 32, hmacOutput2, 32);
+                localEncoder.writeByteString(combined, 64);
             } else {
                 localEncoder.writeByteString(hmacOutput1, 32);
             }
         }
 
-        size_t finalPayloadSize = localEncoder.getOffset() + 1;
-        sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, finalPayloadSize);
-
+        sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, 1 + localEncoder.getOffset());
         free(signatureASN1);
         free(localRespBuf);
         free(responseBuffer);
