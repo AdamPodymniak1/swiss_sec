@@ -921,10 +921,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         authData[35] = (uint8_t)((startingSignCount >> 8) & 0xFF);
         authData[36] = (uint8_t)(startingSignCount & 0xFF);
 
-        initializeDynamicAaguid();
-        memcpy(&authData[37], dynamicAaguid, 16);
+        memset(&authData[37], 0, 16);
 
-        authData[53] = 0x00; authData[54] = 0x10;
+        authData[53] = 0x00; 
+        authData[54] = 0x10;
         memcpy(&authData[55], rawCredId, 16);
 
         uint8_t* finalAuthData = (uint8_t*)malloc(8192);
@@ -979,27 +979,18 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         encoder.writeByteString(finalAuthData, authDataOffset);
-        free(finalAuthData);
         if (pubKeyData) free(pubKeyData);
         if (rsaE) free(rsaE);
-
-        uint8_t attestationHash[32];
-        mbedtls_md_init(&sha_ctx);
-        mbedtls_md_setup(&sha_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
-        mbedtls_md_starts(&sha_ctx);
-        mbedtls_md_update(&sha_ctx, &responseBuffer[2], encoder.getOffset() - 1);
-        mbedtls_md_update(&sha_ctx, clientDataHash, 32);
-        mbedtls_md_finish(&sha_ctx, attestationHash);
-        mbedtls_md_free(&sha_ctx);
 
         uint8_t* attestationSig = nullptr;
         size_t attestationSigLen = 0;
 
-        size_t authDataLen = encoder.getOffset() - 1;
-        size_t rawMsgLen = authDataLen + 32;
+        size_t rawMsgLen = authDataOffset + 32;
         uint8_t* rawMsg = (uint8_t*)malloc(rawMsgLen);
-        memcpy(rawMsg, &responseBuffer[2], authDataLen);
-        memcpy(rawMsg + authDataLen, clientDataHash, 32);
+        memcpy(rawMsg, finalAuthData, authDataOffset);
+        memcpy(rawMsg + authDataOffset, clientDataHash, 32);
+        
+        free(finalAuthData);
 
         struct AsyncSign {
             int alg; String pk; uint8_t* msg; size_t mLen; 
