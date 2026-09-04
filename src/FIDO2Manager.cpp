@@ -1293,8 +1293,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
-        uint8_t flags = 0x01;
-        if (optionUV && biometricVerified) { flags |= 0x04; }
+        uint8_t flags = 0x00;
+        if (optionUP || optionUV) { flags |= 0x01; }
+        if (biometricVerified && (optionUP || optionUV)) { flags |= 0x04; }
         if (extensionRequested) { flags |= 0x80; }
         authData[32] = flags;
 
@@ -1696,9 +1697,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_finish(&sha_ctx, authData);
         mbedtls_md_free(&sha_ctx);
 
-        uint8_t flags = 0x01;
-        if (nextAssertionOptionUV) flags |= 0x04;
-        if (nextAssertionExtReq) flags |= 0x80;
+        uint8_t flags = 0x05;
+        if (nextAssertionExtReq) { flags |= 0x80; }
         authData[32] = flags;
 
         uint32_t currentSignCount = loadPersistedSignCount() + 1;
