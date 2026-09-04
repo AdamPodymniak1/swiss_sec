@@ -436,9 +436,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         // 0x01: versions
         encoder.writeUnsignedInt(1);
-        encoder.writeArrayHeader(2);
+        encoder.writeArrayHeader(3);
         encoder.writeTextString("FIDO_2_0");
         encoder.writeTextString("FIDO_2_1_PRE");
+        encoder.writeTextString("FIDO_2_1");
 
         // 0x03: aaguid
         encoder.writeUnsignedInt(3);
@@ -1479,6 +1480,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t newPinEncLen = 0;
         uint8_t pinHashEnc[64];
         size_t pinHashEncLen = 0;
+        uint64_t permissions = 0;
+        char rpIdBuf[256] = {0};
 
         for (uint64_t i = 0; i < rootElements; i++) {
             uint8_t keyType;
@@ -1506,6 +1509,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     }
                 } else if (mapKey == 0x06) {
                     if (!parser.readByteString(pinHashEnc, sizeof(pinHashEnc), pinHashEncLen)) {
+                        parser.skipValue();
+                    }
+                } else if (mapKey == 0x09) {
+                    uint8_t valType;
+                    if (!parser.readTypeAndValue(valType, permissions)) parser.skipValue();
+                } else if (mapKey == 0x0A) {
+                    if (!parser.readTextString(rpIdBuf, sizeof(rpIdBuf) - 1)) {
                         parser.skipValue();
                     }
                 } else {
@@ -1577,7 +1587,34 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             uint8_t mockToken[32] = {0};
             esp_fill_random(mockToken, 32);
             encoder.writeByteString(mockToken, 32);
-        } 
+        }
+        else if (subCommand == 0x09) {
+            if (!isFidoPinSet()) {
+                uint8_t err = CTAP2_ERR_PIN_NOT_SET;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (getFailedFidoPinAttempts() >= 10) {
+                uint8_t err = 0x32; // CTAP2_ERR_PIN_BLOCKED
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (permissions == 0) {
+                uint8_t err = 0x14; // CTAP2_ERR_MISSING_PARAMETER
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x02); // pinUvAuthToken key
+            uint8_t mockToken[32] = {0};
+            esp_fill_random(mockToken, 32);
+            memcpy(activeAuthToken, mockToken, 32);
+            encoder.writeByteString(mockToken, 32);
+        }
         else {
             uint8_t err = CTAP2_ERR_UNSUPPORTED_OPTION;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -1808,7 +1845,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         free(responseBuffer);
         return;
     }
-    else if (ctap2Cmd == 0x0A) { // authenticatorCredentialManagement
+    else if (ctap2Cmd == 0x0A || ctap2Cmd == 0x41) { // authenticatorCredentialManagement
         CborParser parser(data + 1, len - 1);
         uint8_t rootType;
         uint64_t rootElements;
