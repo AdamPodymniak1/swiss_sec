@@ -1341,6 +1341,123 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         free(responseBuffer);
         return;
     }
+    else if (ctap2Cmd == 0x06) {
+        CborParser parser(data + 1, len - 1);
+        uint8_t rootType;
+        uint64_t rootElements;
+
+        if (!parser.readTypeAndValue(rootType, rootElements) || rootType != 5) {
+            uint8_t err = 0x11;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        uint8_t pinProtocol = 0;
+        uint64_t subCommand = 0;
+        uint8_t keyAgreement[64];
+        size_t keyAgreementLen = 0;
+        uint8_t pinAuth[32];
+        size_t pinAuthLen = 0;
+        uint8_t newPinEnc[64];
+        size_t newPinEncLen = 0;
+        uint8_t pinHashEnc[64];
+        size_t pinHashEncLen = 0;
+
+        for (uint64_t i = 0; i < rootElements; i++) {
+            uint8_t keyType;
+            uint64_t mapKey;
+
+            if (parser.readTypeAndValue(keyType, mapKey) && keyType == 0) {
+                if (mapKey == 0x01) {
+                    uint8_t valType; uint64_t val;
+                    if (parser.readTypeAndValue(valType, val)) pinProtocol = val;
+                } else if (mapKey == 0x02) {
+                    uint8_t valType;
+                    parser.readTypeAndValue(valType, subCommand);
+                } else if (mapKey == 0x03) {
+                    parser.readByteString(keyAgreement, sizeof(keyAgreement), keyAgreementLen);
+                } else if (mapKey == 0x04) {
+                    parser.readByteString(pinAuth, sizeof(pinAuth), pinAuthLen);
+                } else if (mapKey == 0x05) {
+                    parser.readByteString(newPinEnc, sizeof(newPinEnc), newPinEncLen);
+                } else if (mapKey == 0x06) {
+                    parser.readByteString(pinHashEnc, sizeof(pinHashEnc), pinHashEncLen);
+                } else {
+                    parser.skipValue();
+                }
+            } else {
+                parser.skipValue();
+            }
+        }
+
+        responseBuffer[0] = 0x00;
+        CborEncoder encoder(&responseBuffer[1], 8191);
+
+        if (subCommand == 0x05) {
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x03);
+            encoder.writeUnsignedInt(10 - getFailedFidoPinAttempts());
+        } 
+        else if (subCommand == 0x02) {
+            uint8_t privKey[32];
+            uint8_t pubKey[65];
+            generateKeypairP256(privKey, pubKey);
+            
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x01);
+            encoder.writeMapHeader(5);
+            encoder.writeUnsignedInt(0x01); encoder.writeUnsignedInt(0x02);
+            encoder.writeUnsignedInt(0x03); encoder.writeNegativeInt(-7);
+            encoder.writeNegativeInt(-1); encoder.writeUnsignedInt(0x01);
+            encoder.writeNegativeInt(-2); encoder.writeByteString(pubKey + 1, 32);
+            encoder.writeNegativeInt(-3); encoder.writeByteString(pubKey + 33, 32);
+        }
+        else if (subCommand == 0x03) {
+            if (isFidoPinSet()) {
+                uint8_t err = 0x2E;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            String decryptedPin = toHex(newPinEnc, 4); 
+            createFidoPin(decryptedPin);
+            encoder.writeMapHeader(0);
+        }
+        else if (subCommand == 0x04) {
+            if (!isFidoPinSet()) {
+                uint8_t err = 0x2E;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            String decryptedNewPin = toHex(newPinEnc, 4);
+            createFidoPin(decryptedNewPin);
+            encoder.writeMapHeader(0);
+        }
+        else if (subCommand == 0x01) {
+            if (!isFidoPinSet()) {
+                uint8_t err = 0x2E;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x02);
+            uint8_t mockToken[32] = {0};
+            encoder.writeByteString(mockToken, 32);
+        } 
+        else {
+            uint8_t err = 0x2B;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+        free(responseBuffer);
+        return;
+    }
     else {
         uint8_t err = 0x11;
         sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);

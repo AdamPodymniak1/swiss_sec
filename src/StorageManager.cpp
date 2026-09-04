@@ -949,3 +949,38 @@ void secureWipe(String &str) {
         str = "";
     }
 }
+
+bool isFidoPinSet() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    bool res = SPIFFS.exists("/fido_pin.txt");
+    xSemaphoreGive(storageMutex);
+    return res;
+}
+
+void createFidoPin(const String &pin) {
+    String hashedPin = hashPin(pin);
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/fido_pin.txt", "w");
+    if (file) {
+        file.print(hashedPin);
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+int getFailedFidoPinAttempts() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/fido_fail.txt")) {
+        xSemaphoreGive(storageMutex);
+        return 0;
+    }
+    File file = SPIFFS.open("/fido_fail.txt", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return 0;
+    }
+    String val = file.readString();
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return val.toInt();
+}
