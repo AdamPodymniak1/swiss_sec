@@ -28,7 +28,7 @@ static uint8_t activeAuthToken[32];
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
-bool optionRK = false;
+bool optionRK;
 
 // Stable per-device AAGUID, with a fixed namespace prefix and MAC-derived suffix.
 void initializeDynamicAaguid() {
@@ -519,6 +519,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         return;
     }
     else if (ctap2Cmd == 0x01) {
+        bool optionRK = false;
         char targetRpId[128] = {0};
         uint8_t clientDataHash[32] = {0};
         size_t clientDataHashLen = 0;

@@ -117,6 +117,10 @@ void cliTask(void *pvParameters) {
                 data["commands"][10] = "PURGE_STORAGE";
                 data["commands"][11] = "RUN_DIAGNOSTICS";
                 data["commands"][12] = "UPDATE_SETTINGS";
+                data["commands"][13] = "UPDATE_PASS";
+                data["commands"][14] = "SET_CRYPTO_ALG";
+                data["commands"][15] = "ENROLL_FINGERPRINT";
+                data["commands"][16] = "FACTORY_RESET";
                 CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
             else if (cmd == "SAVE_PASS" || cmd == "create") {
@@ -243,6 +247,21 @@ void cliTask(void *pvParameters) {
 
                 showDisplayMessage(2, "AUTH TO UPDATE:", website, 0);
                 CommsManager::sendEvent("PASS", "AWAITING_HARDWARE_APPROVAL");
+            }
+            else if (cmd == "ENROLL_FINGER") {
+                uint8_t id = req["id"] | 1;
+                if (enrollFingerprint(id)) {
+                    CommsManager::sendEvent("AUTH", "FINGERPRINT_ENROLLED");
+                } else {
+                    CommsManager::sendError("AUTH", "ENROLL_FAILED");
+                }
+            }
+            else if (cmd == "FACTORY_RESET") {
+                factoryResetSystem();
+                clearStorageKey();
+                authenticated = false;
+                currentCommandState = STATE_READY;
+                CommsManager::sendEvent("SYS", "FACTORY_RESET_COMPLETE");
             }
             else {
                 CommsManager::sendError("SYS", "UNKNOWN_CMD");

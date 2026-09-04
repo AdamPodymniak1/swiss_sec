@@ -35,6 +35,19 @@ document.querySelectorAll('.tab-btn').forEach(button => {
     });
 });
 
+document.getElementById('btnRegFinger').onclick = () => {
+    showMsg("Place finger on sensor...", "orange");
+    // Hardcoding ID 1 as defined in your table. You can later add a UI input for this if needed.
+    chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "ENROLL_FINGER", id: 1 } });
+};
+
+document.getElementById('btnFactoryReset').onclick = () => {
+    if (confirm("WARNING: This will perform a full factory reset, wiping ALL data and fingerprints. Continue?")) {
+        showMsg("Factory resetting...", "red");
+        chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "FACTORY_RESET" } });
+    }
+};
+
 function checkStatus() {
     chrome.runtime.sendMessage({ target: "dashboard", type: "PING" }, (response) => {
         if (chrome.runtime.lastError || !response) {
@@ -408,6 +421,13 @@ chrome.runtime.onMessage.addListener((message) => {
             } else if (json.module === "PASS" && json.event === "UPDATED") {
                 showMsg("Password updated successfully!", "lime");
                 document.getElementById('btnListPass').click();
+            } else if (json.module === "AUTH" && json.event === "FINGERPRINT_ENROLLED") {
+                showMsg("Fingerprint enrolled successfully!", "lime");
+            } else if (json.module === "SYS" && json.event === "FACTORY_RESET_COMPLETE") {
+                showMsg("Factory Reset Complete!", "lime");
+                document.getElementById('btnListPass').click();
+                document.getElementById('btnListFido').click();
+                document.getElementById('btnListTotp').click();
             }
         } else if (json.type === "error") {
             showMsg("Error: " + json.error_code, "orange");
