@@ -56,6 +56,19 @@ void initializeDynamicAaguid() {
     isAaguidInitialized = true;
 }
 
+static bool constantTimeEquals(const uint8_t* a, const uint8_t* b, size_t len) {
+    uint8_t result = 0;
+    for (size_t i = 0; i < len; i++) {
+        result |= a[i] ^ b[i];
+    }
+    return result == 0;
+}
+
+static bool constantTimeStringEquals(const String& a, const String& b) {
+    if (a.length() != b.length()) return false;
+    return constantTimeEquals((const uint8_t*)a.c_str(), (const uint8_t*)b.c_str(), a.length());
+}
+
 uint32_t loadPersistedSignCount() {
     uint32_t count = 0;
     EEPROM.begin(512); 
@@ -296,7 +309,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         String storedAppId, dummyUser, dummyName, privHex;
         int alg;
 
-        if (!getPasskeyRecord(khHex, storedAppId, dummyUser, dummyName, privHex, alg) || storedAppId != appIdHex) {
+        if (!getPasskeyRecord(khHex, storedAppId, dummyUser, dummyName, privHex, alg) || !constantTimeStringEquals(storedAppId, appIdHex)) {
             uint8_t err[] = {0x6A, 0x80};
             sendCtapResponse(channel, 0x03, err, 2);
             return;
@@ -696,7 +709,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 String dummyRpId, dummyUserId, dummyUser, dummyKey;
                 int dummyAlgId;
                 if (getPasskeyRecord(candidateIdHex, dummyRpId, dummyUserId, dummyUser, dummyKey, dummyAlgId)) {
-                    if (dummyRpId == String(targetRpId)) {
+                    if (constantTimeStringEquals(dummyRpId, String(targetRpId))) {
                         uint8_t err = 0x19;
                         sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                         free(responseBuffer);
@@ -1186,7 +1199,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     matchedCreds.push_back(candidateIdHex);
                 }
                 // 2. Fall back to resident key storage
-                else if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && candidateRpId == String(targetRpId)) {
+                else if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && constantTimeStringEquals(candidateRpId, String(targetRpId))) {
                     matchedCreds.push_back(candidateIdHex);
                 }
             }
@@ -1994,7 +2007,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     mbedtls_md_finish(&sha_ctx, rpHash);
                     mbedtls_md_free(&sha_ctx);
 
-                    if (memcmp(rpHash, targetRpIdHash, 32) == 0) {
+                    if (constantTimeEquals(rpHash, targetRpIdHash, 32)) {
                         enumCredList.push_back(credHex);
                     }
                 }
