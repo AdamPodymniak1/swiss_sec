@@ -92,9 +92,15 @@ void savePersistedSignCount(uint32_t count) {
 }
 
 bool fidoVerifyFingerprint() {
+    if (getFailedUvAttempts() >= 5) {
+        showDisplayMessage(1, "UV BLOCKED", "", 2000);
+        return false;
+    }
+
 #if USE_FINGERPRINT_SIMULATOR
     if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
         while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(10 / portTICK_PERIOD_MS); }
+        resetFailedUvAttempts();
         return true;
     }
     return false;
@@ -105,25 +111,38 @@ bool fidoVerifyFingerprint() {
         vTaskDelay(50 / portTICK_PERIOD_MS);
         img = finger.getImage();
     }
+    if (img == FINGERPRINT_NOFINGER) {
+        xSemaphoreGive(fingerprintMutex);
+        return false;
+    }
     if (img != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
         return false;
     }
     if (finger.image2Tz() != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
+        incrementFailedUvAttempts();
         return false;
     }
     if (finger.fingerSearch() != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
+        incrementFailedUvAttempts();
         return false;
     }
     if (finger.confidence == lastConfidenceScore && finger.confidence > 0) {
         xSemaphoreGive(fingerprintMutex);
+        incrementFailedUvAttempts();
         return false;
     }
     lastConfidenceScore = finger.confidence;
     bool result = finger.confidence > 50;
     xSemaphoreGive(fingerprintMutex);
+
+    if (result) {
+        resetFailedUvAttempts();
+    } else {
+        incrementFailedUvAttempts();
+    }
     return result;
 #endif
 }
@@ -2503,6 +2522,59 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
+        sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == 0x0D) {
+        CborParser parser(data + 1, len - 1);
+        uint8_t rootType; uint64_t rootElements;
+
+        if (!parser.readTypeAndValue(rootType, rootElements) || rootType != 5) {
+            uint8_t err = 0x11;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        uint64_t subCommand = 0;
+        uint64_t minPinLenParam = 0;
+        
+        for (uint64_t i = 0; i < rootElements; i++) {
+            uint8_t keyType; uint64_t mapKey;
+            if (parser.readTypeAndValue(keyType, mapKey) && keyType == 0) {
+                if (mapKey == 0x01) {
+                    uint8_t valType; parser.readTypeAndValue(valType, subCommand);
+                } else if (mapKey == 0x02) {
+                    uint8_t subType; uint64_t subElem;
+                    if (parser.readTypeAndValue(subType, subElem) && subType == 5) {
+                        for (uint64_t j = 0; j < subElem; j++) {
+                            uint8_t pKeyType; uint64_t pMapKey;
+                            if (parser.readTypeAndValue(pKeyType, pMapKey) && pKeyType == 0) {
+                                if (pMapKey == 0x02) {
+                                    uint8_t valType; parser.readTypeAndValue(valType, minPinLenParam);
+                                } else { parser.skipValue(); }
+                            } else { parser.skipValue(); }
+                        }
+                    } else { parser.skipValue(); }
+                } else { parser.skipValue(); }
+            } else { parser.skipValue(); }
+        }
+
+        if (subCommand == 0x02) {
+            setForcePinChange(true);
+        } else if (subCommand == 0x03) {
+            setMinPinLength((uint8_t)minPinLenParam);
+        } else if (subCommand != 0x01) {
+            uint8_t err = 0x2B;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        responseBuffer[0] = 0x00;
+        CborEncoder encoder(&responseBuffer[1], 8191);
+        encoder.writeMapHeader(0);
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         free(responseBuffer);
         return;

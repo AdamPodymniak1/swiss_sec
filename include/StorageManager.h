@@ -68,4 +68,15 @@ void rotateStatelessMasterSecret();
 static void getStatelessMasterSecret(uint8_t secretOut[32]);
 void rotateStatelessMasterSecret();
 
+bool getForcePinChange();
+void setForcePinChange(bool force);
+uint8_t getMinPinLength();
+void setMinPinLength(uint8_t length);
+int getFailedUvAttempts();
+void incrementFailedUvAttempts();
+void resetFailedUvAttempts();
+void incrementFailedFidoPinAttempts();
+void resetFailedFidoPinAttempts();
+bool verifyFidoPinInternal(const String& pin);
+
 #endif

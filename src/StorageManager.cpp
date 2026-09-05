@@ -1086,18 +1086,16 @@ int getFailedFidoPinAttempts() {
 
 void resetFido2System() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
-    
     if (SPIFFS.exists("/passkeys.json")) SPIFFS.remove("/passkeys.json");
     if (SPIFFS.exists("/passkeys.bin")) SPIFFS.remove("/passkeys.bin");
     if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
     if (SPIFFS.exists("/fido_pin.txt")) SPIFFS.remove("/fido_pin.txt");
     if (SPIFFS.exists("/fido_fail.txt")) SPIFFS.remove("/fido_fail.txt");
-    // The large-blob array is keyed to largeBlobKeys held by credentials
-    // that this reset just destroyed, so it must go too.
+    if (SPIFFS.exists("/fido_uv_fail.txt")) SPIFFS.remove("/fido_uv_fail.txt");
+    if (SPIFFS.exists("/fido_force_pin.txt")) SPIFFS.remove("/fido_force_pin.txt");
+    if (SPIFFS.exists("/fido_min_pin.txt")) SPIFFS.remove("/fido_min_pin.txt");
     if (SPIFFS.exists("/largeblob.bin")) SPIFFS.remove("/largeblob.bin");
-
     rotateStatelessMasterSecret();
-    
     xSemaphoreGive(storageMutex);
     CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
 }
@@ -1450,4 +1448,121 @@ void rotateStatelessMasterSecret() {
         nvs_commit(h);
         nvs_close(h);
     }
+}
+
+int getFailedUvAttempts() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/fido_uv_fail.txt")) {
+        xSemaphoreGive(storageMutex);
+        return 0;
+    }
+    File file = SPIFFS.open("/fido_uv_fail.txt", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return 0;
+    }
+    String val = file.readString();
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return val.toInt();
+}
+
+void incrementFailedUvAttempts() {
+    int attempts = getFailedUvAttempts() + 1;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/fido_uv_fail.txt", "w");
+    if (file) {
+        file.print(attempts);
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+void resetFailedUvAttempts() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/fido_uv_fail.txt")) {
+        SPIFFS.remove("/fido_uv_fail.txt");
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+bool getForcePinChange() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    bool res = false;
+    if (SPIFFS.exists("/fido_force_pin.txt")) {
+        File f = SPIFFS.open("/fido_force_pin.txt", "r");
+        if (f) {
+            res = (f.readString().toInt() == 1);
+            f.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+    return res;
+}
+
+void setForcePinChange(bool force) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File f = SPIFFS.open("/fido_force_pin.txt", "w");
+    if (f) {
+        f.print(force ? "1" : "0");
+        f.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+uint8_t getMinPinLength() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    uint8_t res = 4;
+    if (SPIFFS.exists("/fido_min_pin.txt")) {
+        File f = SPIFFS.open("/fido_min_pin.txt", "r");
+        if (f) {
+            res = f.readString().toInt();
+            f.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+    return res < 4 ? 4 : res;
+}
+
+void setMinPinLength(uint8_t length) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File f = SPIFFS.open("/fido_min_pin.txt", "w");
+    if (f) {
+        f.print(length);
+        f.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+void incrementFailedFidoPinAttempts() {
+    int attempts = getFailedFidoPinAttempts() + 1;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/fido_fail.txt", "w");
+    if (file) {
+        file.print(attempts);
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+void resetFailedFidoPinAttempts() {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/fido_fail.txt")) {
+        SPIFFS.remove("/fido_fail.txt");
+    }
+    xSemaphoreGive(storageMutex);
+}
+
+bool verifyFidoPinInternal(const String& pin) {
+    if (!isFidoPinSet()) return false;
+    String hashedPin = hashPin(pin);
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/fido_pin.txt", "r");
+    String storedHash = "";
+    if (file) {
+        storedHash = file.readString();
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+    return storedHash == hashedPin;
 }
