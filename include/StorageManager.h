@@ -30,8 +30,13 @@ void clearAllStoredPasswords();
 
 bool isPasskeyExists(const String &credentialIdHex);
 bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId);
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex);
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId);
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut);
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex);
+
+bool getLargeBlobArray(uint8_t **outData, size_t &outLen);
+bool setLargeBlobArray(const uint8_t *data, size_t len);
 
 size_t getBinaryCredentialId(const String &rpId, const String &userIdHex, uint8_t *outBuffer, size_t maxOutLen);
 

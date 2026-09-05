@@ -165,17 +165,24 @@ bool CborParser::readByteString(uint8_t *destBuffer, size_t maxLen, size_t &actu
     return true;
 }
 
+// NOTE: maxLen is the TOTAL capacity of destBuffer, including room for the
+// NUL terminator this function appends. A string of exactly maxLen bytes is
+// rejected rather than overflowing the buffer by one byte.
 bool CborParser::readTextString(char *destBuffer, size_t maxLen) {
     uint8_t majorType;
     uint64_t strLen;
     size_t savedOffset = offset;
+
+    if (maxLen == 0) return false;
 
     if (!readTypeAndValue(majorType, strLen) || majorType != 3) {
         offset = savedOffset;
         return false;
     }
 
-    if (strLen > maxLen || strLen > length - offset) {
+    // Reserve one byte for the NUL terminator so destBuffer[strLen] below
+    // can never write past the end of the caller's buffer.
+    if (strLen > maxLen - 1 || strLen > length - offset) {
         offset = savedOffset;
         return false;
     }

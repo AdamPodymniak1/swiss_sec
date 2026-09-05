@@ -16,6 +16,15 @@ static uint8_t nextAssertionSalt1[32] = {0};
 static uint8_t nextAssertionSalt2[32] = {0};
 static size_t nextAssertionSalt1Len = 0;
 static size_t nextAssertionSalt2Len = 0;
+static bool nextAssertionLargeBlobReq = false;
+
+// authenticatorLargeBlobs (CTAP 2.1) fragment reassembly state for an
+// in-progress "set" of the large-blob array.
+static uint8_t* largeBlobWriteBuffer = nullptr;
+static size_t largeBlobWriteBufferCapacity = 0;
+static size_t largeBlobExpectedTotalLen = 0;
+static size_t largeBlobReceivedLen = 0;
+static const size_t MAX_LARGE_BLOB_ARRAY = 4096;
 static std::vector<String> enumRpList;
 static size_t enumRpIdx = 0;
 static std::vector<String> enumCredList;
@@ -443,8 +452,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
 
-        // Map header set to 9 elements (keys: 1, 3, 4, 5, 6, 7, 8, 9, 10)
-        encoder.writeMapHeader(9);
+        // Map header set to 11 elements (keys: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+        encoder.writeMapHeader(11);
 
         // 0x01: versions
         encoder.writeUnsignedInt(1);
@@ -453,6 +462,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("FIDO_2_1_PRE");
         encoder.writeTextString("FIDO_2_1");
 
+        // 0x02: extensions (CTAP 2.1 extensions this authenticator supports)
+        encoder.writeUnsignedInt(2);
+        encoder.writeArrayHeader(3);
+        encoder.writeTextString("hmac-secret");
+        encoder.writeTextString("credProtect");
+        encoder.writeTextString("largeBlobKey");
+
         // 0x03: aaguid
         encoder.writeUnsignedInt(3);
         initializeDynamicAaguid();
@@ -460,7 +476,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         // 0x04: options map
         encoder.writeUnsignedInt(4);
-        encoder.writeMapHeader(7);
+        encoder.writeMapHeader(9);
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         #if USE_FINGERPRINT_SIMULATOR
@@ -472,6 +488,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
         encoder.writeTextString("pinUvAuthToken"); encoder.writeBoolean(true);
         encoder.writeTextString("credentialMgmtPreview"); encoder.writeBoolean(true);
+        // CTAP 2.1: this authenticator always performs a fingerprint check
+        // for any user-verifying operation, regardless of what the "up"/"uv"
+        // options in the request ask for (see the alwaysUv enforcement in
+        // authenticatorGetAssertion below), so it truthfully advertises
+        // alwaysUv=true. largeBlobs=true advertises authenticatorLargeBlobs
+        // command support.
+        encoder.writeTextString("alwaysUv"); encoder.writeBoolean(true);
+        encoder.writeTextString("largeBlobs"); encoder.writeBoolean(true);
 
         // 0x05: maxMsgSize
         encoder.writeUnsignedInt(5); encoder.writeUnsignedInt(8192);
@@ -520,6 +544,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("alg"); encoder.writeNegativeInt(-50);
         encoder.writeTextString("type"); encoder.writeTextString("public-key");
 
+        // 0x0B: maxSerializedLargeBlobArray
+        encoder.writeUnsignedInt(0x0B);
+        encoder.writeUnsignedInt(MAX_LARGE_BLOB_ARRAY);
+
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         free(responseBuffer);
         return;
@@ -540,6 +568,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         char userName[128] = {0};
         bool hmacSecretRequested = false;
         int selectedAlgId = defaultCryptoAlg;
+        int requestedCredProtect = 1; // CTAP 2.1 default: userVerificationOptional
+        bool largeBlobKeyRequested = false;
 
         static const size_t MAX_EXCLUDE_CREDENTIALS = 16;
         uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][MAX_CREDENTIAL_ID_LEN];
@@ -643,6 +673,25 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                     uint8_t valType; uint64_t valVal;
                                     if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
                                         hmacSecretRequested = (valVal == 21);
+                                    } else { parser.skipValue(); }
+                                }
+                                // CTAP 2.1 credProtect extension: unsigned int 1-3.
+                                // Values outside that range are ignored and the
+                                // default (1) is kept, per the extension's
+                                // "unknown value" handling in the spec.
+                                else if (strcmp(extKey, "credProtect") == 0) {
+                                    uint8_t valType; uint64_t valVal;
+                                    if (parser.readTypeAndValue(valType, valVal) && valType == 0 &&
+                                        valVal >= 1 && valVal <= 3) {
+                                        requestedCredProtect = (int)valVal;
+                                    } else { parser.skipValue(); }
+                                }
+                                // CTAP 2.1 largeBlobKey extension: boolean true.
+                                // Only meaningful for discoverable (rk) credentials.
+                                else if (strcmp(extKey, "largeBlobKey") == 0) {
+                                    uint8_t valType; uint64_t valVal;
+                                    if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                        largeBlobKeyRequested = (valVal == 21);
                                     } else { parser.skipValue(); }
                                 } else { parser.skipValue(); }
                             } else { parser.skipValue(); }
@@ -753,7 +802,6 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         if (!biometricVerified) {
             showDisplayMessage(1, "VERIFICATION FAILED", "", 0);
-            xSemaphoreGive(displayMutex);
             uint8_t err = 0x34;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
@@ -880,13 +928,25 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             optionRK = true;
         }
 
+        // largeBlobKey requires a discoverable (resident) credential; silently
+        // drop the request otherwise, per CTAP 2.1 sec 12.2.
+        bool largeBlobKeyGenerated = false;
+        String largeBlobKeyHex = "";
+        if (largeBlobKeyRequested && optionRK) {
+            uint8_t rawLargeBlobKey[32];
+            esp_fill_random(rawLargeBlobKey, 32);
+            largeBlobKeyHex = toHex(rawLargeBlobKey, 32);
+            largeBlobKeyGenerated = true;
+            memset(rawLargeBlobKey, 0, 32);
+        }
+
         if (optionRK) {
             // Resident Key (Stored on Flash)
             rawCredIdLen = 16;
             for(int i = 0; i < 16; i++) rawCredId[i] = esp_random() & 0xFF;
             String credentialIdHex = toHex(rawCredId, 16);
 
-            if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId)) {
+            if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId, requestedCredProtect, largeBlobKeyHex)) {
                 showDisplayMessage(1, "SAVE FAILED", "", 0);
                 uint8_t err = 0x21;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -911,7 +971,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
-        encoder.writeMapHeader(hmacSecretRequested ? 4 : 3);
+        size_t makeCredMapItems = 3;
+        if (largeBlobKeyGenerated) makeCredMapItems++;
+        if (hmacSecretRequested) makeCredMapItems++;
+        encoder.writeMapHeader(makeCredMapItems);
 
         encoder.writeUnsignedInt(1);
         encoder.writeTextString("packed");
@@ -1050,8 +1113,23 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         free(attestationSig);
 
+        if (largeBlobKeyGenerated) {
+            // CTAP 2.1 makeCredential response key 0x05: largeBlobKey (raw
+            // 32-byte string, distinct from the extensions map at 0x06).
+            encoder.writeUnsignedInt(5);
+            uint8_t rawLargeBlobKeyOut[32];
+            fromHex(largeBlobKeyHex, rawLargeBlobKeyOut, 32);
+            encoder.writeByteString(rawLargeBlobKeyOut, 32);
+            memset(rawLargeBlobKeyOut, 0, 32);
+        }
+
         if (hmacSecretRequested) {
-            encoder.writeUnsignedInt(4);
+            // CTAP2 spec: key 0x04 in the makeCredential response is
+            // "enterpriseAttestation" and MUST be a boolean. Extension
+            // outputs (a map) belong at key 0x06. Sending a map at 0x04
+            // makes strict CTAP2 clients (e.g. Chrome/Android) fail to
+            // parse an otherwise-successful response.
+            encoder.writeUnsignedInt(6);
             encoder.writeMapHeader(1);
             encoder.writeTextString("hmac-secret");
             encoder.writeBoolean(true);
@@ -1074,6 +1152,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         uint8_t hmacSalt2[32] = {0};
         size_t hmacSalt1Len = 0;
         size_t hmacSalt2Len = 0;
+        bool largeBlobKeyRequested = false;
 
         static const size_t MAX_ALLOW_CREDENTIALS = 32;
         uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][MAX_CREDENTIAL_ID_LEN] = {0};
@@ -1152,31 +1231,56 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     }
                 } else { parser.skipValue(); }
             }
-            else if (mapKey == 0x06) {
-                uint8_t extType; uint64_t extElements;
-                if (parser.readTypeAndValue(extType, extElements) && extType == 5) {
+            // Per CTAP2 spec, authenticatorGetAssertion uses DIFFERENT map key
+            // numbers than authenticatorMakeCredential: extensions is 0x04
+            // (not 0x06), pinUvAuthParam is 0x06 (a raw byte string, not a
+            // map), and pinUvAuthProtocol is 0x07. Previously this code
+            // reused the makeCredential key numbering, which meant a real
+            // "extensions" map (sent at key 0x04) was silently ignored, and
+            // a pinUvAuthParam byte string (sent at key 0x06, by any client
+            // that first negotiated a PIN/UV token) was misinterpreted as an
+            // extensions map -- corrupting the parse of everything after it.
+            else if (mapKey == 0x04) { // extensions
+                if (parser.peekMajorType() == 5) {
+                    uint8_t extType; uint64_t extElements;
+                    parser.readTypeAndValue(extType, extElements);
                     for (uint64_t j = 0; j < extElements; j++) {
                         char extKey[32] = {0};
                         if (parser.readTextString(extKey, sizeof(extKey))) {
-                            if (strcmp(extKey, "hmac-secret") == 0) {
+                            if (strcmp(extKey, "hmac-secret") == 0 && parser.peekMajorType() == 5) {
                                 uint8_t subMapType; uint64_t subMapElements;
-                                if (parser.readTypeAndValue(subMapType, subMapElements) && subMapType == 5) {
-                                    extensionRequested = true;
-                                    for (uint64_t k = 0; k < subMapElements; k++) {
-                                        uint8_t saltKeyType; uint64_t saltMapKey;
-                                        if (parser.readTypeAndValue(saltKeyType, saltMapKey) && saltKeyType == 0) {
-                                            if (saltMapKey == 1) {
-                                                parser.readByteString(hmacSalt1, sizeof(hmacSalt1), hmacSalt1Len);
-                                            } else if (saltMapKey == 2) {
-                                                parser.readByteString(hmacSalt2, sizeof(hmacSalt2), hmacSalt2Len);
-                                            } else { parser.skipValue(); }
+                                parser.readTypeAndValue(subMapType, subMapElements);
+                                extensionRequested = true;
+                                for (uint64_t k = 0; k < subMapElements; k++) {
+                                    uint8_t saltKeyType; uint64_t saltMapKey;
+                                    if (parser.readTypeAndValue(saltKeyType, saltMapKey) && saltKeyType == 0) {
+                                        if (saltMapKey == 1) {
+                                            parser.readByteString(hmacSalt1, sizeof(hmacSalt1), hmacSalt1Len);
+                                        } else if (saltMapKey == 2) {
+                                            parser.readByteString(hmacSalt2, sizeof(hmacSalt2), hmacSalt2Len);
                                         } else { parser.skipValue(); }
-                                    }
+                                    } else { parser.skipValue(); }
+                                }
+                            }
+                            // CTAP 2.1 largeBlobKey extension: boolean true.
+                            else if (strcmp(extKey, "largeBlobKey") == 0) {
+                                uint8_t valType; uint64_t valVal;
+                                if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                    largeBlobKeyRequested = (valVal == 21);
                                 } else { parser.skipValue(); }
-                            } else { parser.skipValue(); }
+                            }
+                            else {
+                                parser.skipValue();
+                            }
                         } else { parser.skipValue(); }
                     }
                 } else { parser.skipValue(); }
+            }
+            else if (mapKey == 0x06) { // pinUvAuthParam - not used by this authenticator, just skip cleanly
+                parser.skipValue();
+            }
+            else if (mapKey == 0x07) { // pinUvAuthProtocol - not used by this authenticator, just skip cleanly
+                parser.skipValue();
             }
             else {
                 parser.skipValue();
@@ -1221,6 +1325,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         int storedAlgId;
+        int storedCredProtect = 1;
+        String storedLargeBlobKeyHex = "";
         
         uint8_t binCredId[256];
         size_t binCredLen = credentialIdHex.length() / 2;
@@ -1231,12 +1337,34 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                storedPrivateKeyHex, storedAlgId)) {
             storedRpId = String(targetRpId);
             if (storedUserName.length() == 0) storedUserName = "Stateless User";
-        } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
+            // credProtect / largeBlobKey aren't tracked for non-discoverable
+            // (stateless) credentials; they always behave as level 1 with no
+            // large-blob key.
+        } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex)) {
             uint8_t err = 0x2E;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
             return;
         }
+
+        // CTAP 2.1 credProtect enforcement: level 3
+        // (userVerificationRequired) always demands UV, and level 2
+        // (userVerificationOptionalWithCredentialIDList) demands UV unless
+        // the platform named this credential explicitly via allowList.
+        bool resolvedViaAllowList = (allowCredentialCount > 0);
+        bool credProtectRequiresUv = (storedCredProtect == 3) ||
+                                      (storedCredProtect == 2 && !resolvedViaAllowList);
+
+        // CTAP 2.1 alwaysUv: this authenticator's fingerprint sensor is the
+        // only user-verification mechanism it has, and it always uses it for
+        // an assertion -- it does not honor a platform request to skip UV
+        // (up:false/uv:false), matching the alwaysUv=true declared in
+        // authenticatorGetInfo. credProtectRequiresUv is therefore always
+        // already satisfied, but is kept for clarity and in case alwaysUv
+        // enforcement is ever relaxed in the future.
+        optionUP = true;
+        optionUV = true;
+        (void)credProtectRequiresUv;
 
         nextAssertionCreds = matchedCreds;
         nextAssertionIdx = 1;
@@ -1244,6 +1372,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         memcpy(nextAssertionClientHash, clientDataHash, 32);
         nextAssertionOptionUV = optionUV;
         nextAssertionExtReq = extensionRequested;
+        nextAssertionLargeBlobReq = largeBlobKeyRequested;
         
         if (extensionRequested) {
             memcpy(nextAssertionSalt1, hmacSalt1, 32);
@@ -1403,9 +1532,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         CborEncoder localEncoder(&localRespBuf[1], 8191);
         
+        bool includeLargeBlobKey = largeBlobKeyRequested && storedLargeBlobKeyHex.length() == 64;
+
         size_t mapItems = 4;
         if (extensionRequested) mapItems++;
         if (matchedCreds.size() > 1) mapItems++;
+        if (includeLargeBlobKey) mapItems++;
         localEncoder.writeMapHeader(mapItems);
 
         localEncoder.writeUnsignedInt(0x01);
@@ -1436,6 +1568,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         if (matchedCreds.size() > 1) {
             localEncoder.writeUnsignedInt(0x05);
             localEncoder.writeUnsignedInt(matchedCreds.size());
+        }
+
+        if (includeLargeBlobKey) {
+            // CTAP 2.1 getAssertion response key 0x07: largeBlobKey (raw
+            // 32-byte string for this specific credential).
+            localEncoder.writeUnsignedInt(0x07);
+            uint8_t rawLargeBlobKeyOut[32];
+            fromHex(storedLargeBlobKeyHex, rawLargeBlobKeyOut, 32);
+            localEncoder.writeByteString(rawLargeBlobKeyOut, 32);
+            memset(rawLargeBlobKeyOut, 0, 32);
         }
 
         if (extensionRequested) {
@@ -1517,7 +1659,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     uint8_t valType;
                     if (!parser.readTypeAndValue(valType, permissions)) parser.skipValue();
                 } else if (mapKey == 0x0A) {
-                    if (!parser.readTextString(rpIdBuf, sizeof(rpIdBuf) - 1)) {
+                    if (!parser.readTextString(rpIdBuf, sizeof(rpIdBuf))) {
                         parser.skipValue();
                     }
                 } else {
@@ -1672,6 +1814,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         resetFido2System();
 
+        // A reset invalidates any in-progress large-blob write.
+        if (largeBlobWriteBuffer) { free(largeBlobWriteBuffer); largeBlobWriteBuffer = nullptr; }
+        largeBlobWriteBufferCapacity = 0;
+        largeBlobExpectedTotalLen = 0;
+        largeBlobReceivedLen = 0;
+
         responseBuffer[0] = CTAP2_OK;
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1);
         showDisplayMessage(1, "RESET SUCCESS", "", 0);
@@ -1691,6 +1839,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         String storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex;
         int storedAlgId;
+        int storedCredProtect = 1;
+        String storedLargeBlobKeyHex = "";
 
         uint8_t binCredId[256];
         size_t binCredLen = credentialIdHex.length() / 2;
@@ -1698,7 +1848,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         if (!unwrapStatelessCredential(binCredId, binCredLen, nextAssertionRpId, storedUserIdHex, storedUserName,
                                 storedPrivateKeyHex, storedAlgId)) {
-            if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
+            if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex)) {
                 uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                 free(responseBuffer);
@@ -1802,9 +1952,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         memset(localRespBuf, 0, 8192);
         localRespBuf[0] = 0x00;
 
+        bool includeLargeBlobKey = nextAssertionLargeBlobReq && storedLargeBlobKeyHex.length() == 64;
+
         CborEncoder localEncoder(&localRespBuf[1], 8191);
         size_t mapItems = 4;
         if (nextAssertionExtReq) mapItems++;
+        if (includeLargeBlobKey) mapItems++;
         localEncoder.writeMapHeader(mapItems);
 
         localEncoder.writeUnsignedInt(0x01);
@@ -1832,6 +1985,14 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeTextString("displayName");
         localEncoder.writeTextString(storedUserName.c_str());
 
+        if (includeLargeBlobKey) {
+            localEncoder.writeUnsignedInt(0x07);
+            uint8_t rawLargeBlobKeyOut[32];
+            fromHex(storedLargeBlobKeyHex, rawLargeBlobKeyOut, 32);
+            localEncoder.writeByteString(rawLargeBlobKeyOut, 32);
+            memset(rawLargeBlobKeyOut, 0, 32);
+        }
+
         if (nextAssertionExtReq) {
             localEncoder.writeUnsignedInt(0x08);
             localEncoder.writeMapHeader(1);
@@ -1849,6 +2010,239 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         sendCtapResponse(channel, CTAPHID_CBOR, localRespBuf, 1 + localEncoder.getOffset());
         free(signatureASN1);
         free(localRespBuf);
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == 0x0C) { // authenticatorLargeBlobs (CTAP 2.1)
+        CborParser parser(data + 1, len - 1);
+        uint8_t rootType;
+        uint64_t rootElements;
+
+        if (!parser.readTypeAndValue(rootType, rootElements) || rootType != 5) {
+            uint8_t err = 0x12;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        bool hasGet = false;
+        uint64_t requestedGetLen = 0;
+
+        static const size_t MAX_FRAGMENT_LEN = 1200;
+        uint8_t setFragment[MAX_FRAGMENT_LEN];
+        size_t setFragmentLen = 0;
+        bool hasSet = false;
+
+        uint64_t fragmentOffset = 0;
+        bool hasLength = false;
+        uint64_t declaredTotalLength = 0;
+
+        for (uint64_t i = 0; i < rootElements; i++) {
+            uint8_t keyType;
+            uint64_t mapKey;
+            if (!parser.readTypeAndValue(keyType, mapKey) || keyType != 0) {
+                parser.skipValue();
+                continue;
+            }
+
+            if (mapKey == 0x01) { // get: number of bytes requested
+                uint8_t t; uint64_t v;
+                if (parser.readTypeAndValue(t, v) && t == 0) { hasGet = true; requestedGetLen = v; }
+                else { parser.skipValue(); }
+            }
+            else if (mapKey == 0x02) { // set: this fragment's bytes
+                if (parser.readByteString(setFragment, sizeof(setFragment), setFragmentLen)) {
+                    hasSet = true;
+                } else { parser.skipValue(); }
+            }
+            else if (mapKey == 0x03) { // offset
+                uint8_t t; uint64_t v;
+                if (parser.readTypeAndValue(t, v) && t == 0) { fragmentOffset = v; }
+                else { parser.skipValue(); }
+            }
+            else if (mapKey == 0x04) { // length: total array size, only on the first "set" fragment
+                uint8_t t; uint64_t v;
+                if (parser.readTypeAndValue(t, v) && t == 0) { hasLength = true; declaredTotalLength = v; }
+                else { parser.skipValue(); }
+            }
+            else {
+                // pinUvAuthParam (0x05) / pinUvAuthProtocol (0x06) -- this
+                // authenticator gates writes with a fingerprint check
+                // instead, so these are accepted but ignored.
+                parser.skipValue();
+            }
+        }
+
+        if (hasGet) {
+            if (requestedGetLen == 0 || requestedGetLen > MAX_FRAGMENT_LEN) {
+                uint8_t err = 0x0A; // CTAP1_ERR_INVALID_LENGTH
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            // Default (empty) large-blob array per CTAP 2.1 sec 6.10.2: the
+            // CBOR encoding of an empty array (0x80) followed by its own
+            // 16-byte truncated SHA-256 hash, returned whenever nothing has
+            // been written yet.
+            static const uint8_t emptyLargeBlobArray[17] = {
+                0x80, 0x76, 0xbe, 0x8b, 0x52, 0x8d, 0x00, 0x75,
+                0xf7, 0xaa, 0xe9, 0x8d, 0x6f, 0xa5, 0x7a, 0x6d, 0x3c
+            };
+
+            uint8_t* stored = nullptr;
+            size_t storedLen = 0;
+            bool haveStored = getLargeBlobArray(&stored, storedLen);
+            if (!haveStored || storedLen == 0) {
+                if (stored) free(stored);
+                stored = (uint8_t*)malloc(sizeof(emptyLargeBlobArray));
+                if (!stored) {
+                    uint8_t err = 0x01;
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+                memcpy(stored, emptyLargeBlobArray, sizeof(emptyLargeBlobArray));
+                storedLen = sizeof(emptyLargeBlobArray);
+            }
+
+            size_t fragLen = 0;
+            if (fragmentOffset < storedLen) {
+                fragLen = storedLen - fragmentOffset;
+                if (fragLen > requestedGetLen) fragLen = requestedGetLen;
+            }
+
+            responseBuffer[0] = 0x00;
+            CborEncoder encoder(&responseBuffer[1], 8191);
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x01); // config
+            encoder.writeByteString(stored + fragmentOffset, fragLen);
+
+            free(stored);
+            sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+            free(responseBuffer);
+            return;
+        }
+
+        if (hasSet) {
+            // Writing the large-blob array is security-sensitive, so this
+            // authenticator always requires a fresh fingerprint check
+            // before it accepts the first fragment of a new write.
+            if (fragmentOffset == 0) {
+                if (!hasLength || declaredTotalLength == 0 || declaredTotalLength > MAX_LARGE_BLOB_ARRAY) {
+                    uint8_t err = 0x0A; // CTAP1_ERR_INVALID_LENGTH
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+
+                showDisplayMessage(1, "VERIFY TO WRITE", "BLOB", 0);
+                if (!fidoVerifyFingerprint()) {
+                    showDisplayMessage(1, "VERIFICATION FAILED", "", 1500);
+                    uint8_t err = 0x34; // CTAP2_ERR_UV_INVALID
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+
+                if (largeBlobWriteBuffer) { free(largeBlobWriteBuffer); largeBlobWriteBuffer = nullptr; }
+                largeBlobWriteBuffer = (uint8_t*)malloc(declaredTotalLength);
+                if (!largeBlobWriteBuffer) {
+                    uint8_t err = 0x01;
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+                largeBlobWriteBufferCapacity = declaredTotalLength;
+                largeBlobExpectedTotalLen = declaredTotalLength;
+                largeBlobReceivedLen = 0;
+            }
+
+            // Fragments must arrive in order and fit within the length
+            // declared by the first fragment.
+            if (!largeBlobWriteBuffer || fragmentOffset != largeBlobReceivedLen ||
+                fragmentOffset + setFragmentLen > largeBlobWriteBufferCapacity) {
+                if (largeBlobWriteBuffer) { free(largeBlobWriteBuffer); largeBlobWriteBuffer = nullptr; }
+                largeBlobWriteBufferCapacity = 0;
+                largeBlobExpectedTotalLen = 0;
+                largeBlobReceivedLen = 0;
+
+                uint8_t err = 0x0A; // out-of-order or oversized fragment
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            memcpy(largeBlobWriteBuffer + fragmentOffset, setFragment, setFragmentLen);
+            largeBlobReceivedLen += setFragmentLen;
+
+            if (largeBlobReceivedLen < largeBlobExpectedTotalLen) {
+                // More fragments expected: acknowledge with an empty CBOR map.
+                responseBuffer[0] = 0x00;
+                CborEncoder encoder(&responseBuffer[1], 8191);
+                encoder.writeMapHeader(0);
+                sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+                free(responseBuffer);
+                return;
+            }
+
+            // Final fragment: verify the trailing 16-byte truncated SHA-256
+            // integrity hash the platform appended over everything before
+            // it, per CTAP 2.1 sec 6.10.3, before persisting anything.
+            bool integrityOk = false;
+            if (largeBlobExpectedTotalLen >= 17) {
+                size_t contentLen = largeBlobExpectedTotalLen - 16;
+                uint8_t computedHash[32];
+                mbedtls_md_context_t md_ctx;
+                mbedtls_md_init(&md_ctx);
+                mbedtls_md_setup(&md_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
+                mbedtls_md_starts(&md_ctx);
+                mbedtls_md_update(&md_ctx, largeBlobWriteBuffer, contentLen);
+                mbedtls_md_finish(&md_ctx, computedHash);
+                mbedtls_md_free(&md_ctx);
+
+                integrityOk = (memcmp(computedHash, largeBlobWriteBuffer + contentLen, 16) == 0);
+            }
+
+            if (!integrityOk) {
+                free(largeBlobWriteBuffer);
+                largeBlobWriteBuffer = nullptr;
+                largeBlobWriteBufferCapacity = 0;
+                largeBlobExpectedTotalLen = 0;
+                largeBlobReceivedLen = 0;
+
+                uint8_t err = 0x33; // CTAP2_ERR_INTEGRITY_FAILURE
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            bool saveOk = setLargeBlobArray(largeBlobWriteBuffer, largeBlobExpectedTotalLen);
+            free(largeBlobWriteBuffer);
+            largeBlobWriteBuffer = nullptr;
+            largeBlobWriteBufferCapacity = 0;
+            largeBlobExpectedTotalLen = 0;
+            largeBlobReceivedLen = 0;
+
+            if (!saveOk) {
+                uint8_t err = 0x01;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            showDisplayMessage(1, "BLOB SAVED", "", 1500);
+            responseBuffer[0] = 0x00;
+            CborEncoder encoder(&responseBuffer[1], 8191);
+            encoder.writeMapHeader(0);
+            sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+            free(responseBuffer);
+            return;
+        }
+
+        // Neither "get" nor "set" was present.
+        uint8_t err = 0x0A;
+        sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
         free(responseBuffer);
         return;
     }
@@ -2123,6 +2517,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 FIDO2HIDDevice::~FIDO2HIDDevice() {
     if (ctapBuffer) free(ctapBuffer);
     if (pendingData) free(pendingData);
+    if (largeBlobWriteBuffer) free(largeBlobWriteBuffer);
 }
 
 void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) {

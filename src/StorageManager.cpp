@@ -136,7 +136,59 @@ void factoryResetSystem() {
     SPIFFS.remove("/pin.txt");
     SPIFFS.remove("/failures.txt");
     SPIFFS.remove("/crypto_alg.txt");
+    SPIFFS.remove("/largeblob.bin");
     xSemaphoreGive(storageMutex);
+}
+
+// --- CTAP 2.1 authenticatorLargeBlobs backing store ---
+// The serialized large-blob array is opaque to the authenticator: each
+// entry inside it is already encrypted by the platform under the owning
+// credential's largeBlobKey, and the whole array carries its own trailing
+// integrity hash. We therefore just persist and return the raw bytes
+// as-is; FIDO2Manager is responsible for fragmenting/reassembling and
+// verifying the integrity hash.
+bool getLargeBlobArray(uint8_t** outData, size_t &outLen) {
+    *outData = nullptr;
+    outLen = 0;
+
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/largeblob.bin")) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    File file = SPIFFS.open("/largeblob.bin", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+
+    size_t sz = file.size();
+    uint8_t* buf = (uint8_t*)malloc(sz > 0 ? sz : 1);
+    if (!buf) {
+        file.close();
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    file.read(buf, sz);
+    file.close();
+    xSemaphoreGive(storageMutex);
+
+    *outData = buf;
+    outLen = sz;
+    return true;
+}
+
+bool setLargeBlobArray(const uint8_t* data, size_t len) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/largeblob.bin", "w");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    size_t written = (len > 0) ? file.write(data, len) : 0;
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return written == len;
 }
 
 bool deletePin() {
@@ -480,10 +532,17 @@ bool isPasskeyExists(const String &credentialIdHex) {
     return found;
 }
 
-bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
+// --- CTAP 2.1: credProtect + largeBlobKey support for resident credentials ---
+// Extended records append two fields to the encrypted payload:
+//   userIdHex \n userName \n privateKeyHex \n credProtect \n largeBlobKeyHex
+// Records written before this feature existed simply lack the trailing two
+// fields; getPasskeyRecord (extended overload) falls back to credProtect=1
+// and an empty largeBlobKeyHex when they're absent, so old credentials keep
+// working unchanged.
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex) {
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
-    String rawPayload = userIdHex + "\n" + userName + "\n" + privateKeyHex;
+    String rawPayload = userIdHex + "\n" + userName + "\n" + privateKeyHex + "\n" + String(credProtect) + "\n" + largeBlobKeyHex;
     String encryptedPayload = encryptStoragePayload(rawPayload, fidoKey);
     
     if (encryptedPayload == "") {
@@ -521,7 +580,14 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     return true;
 }
 
-bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId) {
+// Backward-compatible wrapper for call sites that don't care about
+// credProtect / largeBlobKey: stores the CTAP2.0 defaults (credProtect=1,
+// no largeBlobKey).
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
+    return savePasskeyRecord(credentialIdHex, rpId, userIdHex, userName, privateKeyHex, algId, 1, "");
+}
+
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut) {
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
 
@@ -576,9 +642,39 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &us
 
     userIdHexOut = decryptedPayload.substring(0, firstNewline);
     userNameOut = decryptedPayload.substring(firstNewline + 1, secondNewline);
-    privateKeyHexOut = decryptedPayload.substring(secondNewline + 1);
+
+    // Fields beyond privateKeyHex are optional (older records won't have
+    // them): default credProtect to 1 (userVerificationOptional) and
+    // largeBlobKeyHex to empty when absent.
+    int thirdNewline = decryptedPayload.indexOf('\n', secondNewline + 1);
+    int fourthNewline = (thirdNewline == -1) ? -1 : decryptedPayload.indexOf('\n', thirdNewline + 1);
+
+    credProtectOut = 1;
+    largeBlobKeyHexOut = "";
+
+    if (thirdNewline == -1) {
+        privateKeyHexOut = decryptedPayload.substring(secondNewline + 1);
+    } else {
+        privateKeyHexOut = decryptedPayload.substring(secondNewline + 1, thirdNewline);
+        if (fourthNewline == -1) {
+            String cp = decryptedPayload.substring(thirdNewline + 1);
+            if (cp.length() > 0) credProtectOut = cp.toInt();
+        } else {
+            String cp = decryptedPayload.substring(thirdNewline + 1, fourthNewline);
+            if (cp.length() > 0) credProtectOut = cp.toInt();
+            largeBlobKeyHexOut = decryptedPayload.substring(fourthNewline + 1);
+        }
+    }
 
     return true;
+}
+
+// Backward-compatible wrapper for call sites that don't need
+// credProtect / largeBlobKey.
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId) {
+    int dummyCredProtect;
+    String dummyLargeBlobKeyHex;
+    return getPasskeyRecord(credentialIdHex, rpIdOut, userIdHexOut, userNameOut, privateKeyHexOut, algId, dummyCredProtect, dummyLargeBlobKeyHex);
 }
 
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) {
@@ -996,6 +1092,9 @@ void resetFido2System() {
     if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
     if (SPIFFS.exists("/fido_pin.txt")) SPIFFS.remove("/fido_pin.txt");
     if (SPIFFS.exists("/fido_fail.txt")) SPIFFS.remove("/fido_fail.txt");
+    // The large-blob array is keyed to largeBlobKeys held by credentials
+    // that this reset just destroyed, so it must go too.
+    if (SPIFFS.exists("/largeblob.bin")) SPIFFS.remove("/largeblob.bin");
 
     rotateStatelessMasterSecret();
     
