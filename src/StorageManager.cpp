@@ -7,6 +7,8 @@
 #include <vector>
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/aes.h"
+#include <nvs_flash.h>
+#include <nvs.h>
 
 static byte storageKey[32] = {0};
 static bool isStorageKeyLoaded = false;
@@ -994,6 +996,8 @@ void resetFido2System() {
     if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
     if (SPIFFS.exists("/fido_pin.txt")) SPIFFS.remove("/fido_pin.txt");
     if (SPIFFS.exists("/fido_fail.txt")) SPIFFS.remove("/fido_fail.txt");
+
+    rotateStatelessMasterSecret();
     
     xSemaphoreGive(storageMutex);
     CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
@@ -1142,24 +1146,20 @@ bool deletePasskeyRecord(const String &credentialIdHex) {
 }
 
 static void getStatelessMasterKeys(uint8_t* aesKey, uint8_t* hmacKey) {
-    uint8_t mac[6];
-    if (esp_efuse_mac_get_default(mac) != ESP_OK) {
-        memset(mac, 0xEE, 6);
-    }
-    
+    uint8_t secret[32];
+    getStatelessMasterSecret(secret);
+
     mbedtls_md_context_t ctx;
     mbedtls_md_init(&ctx);
     mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0);
-    
-    // AES key generation
+
     mbedtls_md_starts(&ctx);
-    mbedtls_md_update(&ctx, mac, 6);
+    mbedtls_md_update(&ctx, secret, 32);
     mbedtls_md_update(&ctx, (const uint8_t*)"STATELESS_AES_KEY_SALT", 22);
     mbedtls_md_finish(&ctx, aesKey);
 
-    // HMAC key generation
     mbedtls_md_starts(&ctx);
-    mbedtls_md_update(&ctx, mac, 6);
+    mbedtls_md_update(&ctx, secret, 32);
     mbedtls_md_update(&ctx, (const uint8_t*)"STATELESS_HMAC_KEY_SALT", 23);
     mbedtls_md_finish(&ctx, hmacKey);
 
@@ -1167,7 +1167,8 @@ static void getStatelessMasterKeys(uint8_t* aesKey, uint8_t* hmacKey) {
 }
 
 bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t userIdLen,
-                             const String &privateKeyHex, int algId, uint8_t *outCredId, size_t &outCredIdLen) {
+                             const String &userName, const String &privateKeyHex, int algId,
+                             uint8_t *outCredId, size_t &outCredIdLen) {
     uint8_t aesKey[32], hmacKey[32];
     getStatelessMasterKeys(aesKey, hmacKey);
 
@@ -1182,7 +1183,7 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
     mbedtls_md_free(&md_ctx);
 
     size_t privLen = privateKeyHex.length() / 2;
-    size_t payloadBaseLen = 75 + privLen;
+    size_t payloadBaseLen = 108 + privLen;
     size_t paddedLen = (payloadBaseLen + 15) & ~15; // Round up to nearest 16 for CBC padding
 
     uint8_t* plaintext = (uint8_t*)calloc(1, paddedLen);
@@ -1204,10 +1205,13 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
         memcpy(&plaintext[41], userId, plaintext[40]);
     }
 
-    // Use 16-bit length for massive ML-DSA keys
-    plaintext[73] = (privLen >> 8) & 0xFF;
-    plaintext[74] = privLen & 0xFF;
-    fromHex(privateKeyHex, &plaintext[75], privLen);
+    uint8_t uNameLen = (uint8_t)(userName.length() > 32 ? 32 : userName.length());
+    plaintext[73] = uNameLen;
+    memcpy(&plaintext[74], userName.c_str(), uNameLen);
+
+    plaintext[106] = (privLen >> 8) & 0xFF;
+    plaintext[107] = privLen & 0xFF;
+    fromHex(privateKeyHex, &plaintext[108], privLen);
 
     // IV and Encryption
     uint8_t iv[16], iv_copy[16];
@@ -1245,7 +1249,8 @@ bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t u
 }
 
 bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const String &rpId,
-                               String &outUserIdHex, String &outPrivateKeyHex, int &outAlgId) {
+                               String &outUserIdHex, String &outUserName,
+                               String &outPrivateKeyHex, int &outAlgId) {
     if (credIdLen < 123) return false; // Minimum size validation
 
     uint8_t aesKey[32], hmacKey[32];
@@ -1309,17 +1314,41 @@ bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const St
     uint8_t uLen = plaintext[40] > 32 ? 32 : plaintext[40];
     outUserIdHex = toHex(&plaintext[41], uLen);
 
-    // Read 16-bit key length 
-    uint16_t pLen = (plaintext[73] << 8) | plaintext[74];
-    
-    // Bounds check to avoid reading past CBC padding
-    if (75 + pLen > encryptedLen) {
-        free(plaintext);
-        return false;
-    }
-    
-    outPrivateKeyHex = toHex(&plaintext[75], pLen);
+    uint8_t nLen = plaintext[73] > 32 ? 32 : plaintext[73];
+    char nameBuf[33] = {0};
+    memcpy(nameBuf, &plaintext[74], nLen);
+    outUserName = String(nameBuf);
+
+    uint16_t pLen = (plaintext[106] << 8) | plaintext[107];
+    if (108 + pLen > encryptedLen) { free(plaintext); return false; }
+    outPrivateKeyHex = toHex(&plaintext[108], pLen);
 
     free(plaintext);
     return true;
+}
+
+static void getStatelessMasterSecret(uint8_t secretOut[32]) {
+    nvs_handle_t h;
+    if (nvs_open("storage", NVS_READWRITE, &h) != ESP_OK) {
+        memset(secretOut, 0, 32); // should not happen; fails safe/no-verify rather than crash
+        return;
+    }
+    size_t len = 32;
+    if (nvs_get_blob(h, "sl_secret", secretOut, &len) != ESP_OK || len != 32) {
+        esp_fill_random(secretOut, 32);
+        nvs_set_blob(h, "sl_secret", secretOut, 32);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+void rotateStatelessMasterSecret() {
+    nvs_handle_t h;
+    if (nvs_open("storage", NVS_READWRITE, &h) == ESP_OK) {
+        uint8_t fresh[32];
+        esp_fill_random(fresh, 32);
+        nvs_set_blob(h, "sl_secret", fresh, 32);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }

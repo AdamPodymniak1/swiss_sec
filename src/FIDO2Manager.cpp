@@ -872,9 +872,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             return;
         }
 
-        uint8_t rawCredId[256];
+        uint8_t rawCredId[MAX_CREDENTIAL_ID_LEN];
         size_t rawCredIdLen = 0;
         String userIdHex = toHex(userIdRaw, userIdLen);
+
+        if (!optionRK && (selectedAlgId == -257 || selectedAlgId == -48 || selectedAlgId == -49 || selectedAlgId == -50)) {
+            optionRK = true;
+        }
 
         if (optionRK) {
             // Resident Key (Stored on Flash)
@@ -893,7 +897,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         } else {
             // Stateless Credential (Non-Resident Key)
-            if (!wrapStatelessCredential(String(targetRpId), userIdRaw, userIdLen, privateKeyHex, selectedAlgId, rawCredId, rawCredIdLen)) {
+            if (!wrapStatelessCredential(String(targetRpId), userIdRaw, userIdLen, String(userName),
+                              privateKeyHex, selectedAlgId, rawCredId, rawCredIdLen)) {
                 showDisplayMessage(1, "WRAP FAILED", "", 0);
                 uint8_t err = 0x01;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -912,7 +917,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("packed");
 
         encoder.writeUnsignedInt(2);
-        uint8_t authData[200] = {0};
+        uint8_t authData[280] = {0};
 
         mbedtls_md_context_t sha_ctx;
         mbedtls_md_init(&sha_ctx);
@@ -1192,9 +1197,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 String candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex;
                 int candidateAlgId;
 
-                // 1. Try unwrapping as a stateless credential
                 if (unwrapStatelessCredential(allowCredentialIds[i], allowCredentialIdLens[i], String(targetRpId),
-                                            candidateUserIdHex, candidatePrivateKeyHex, candidateAlgId)) {
+                               candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId)) {
                     matchedCreds.push_back(candidateIdHex);
                 }
                 // 2. Fall back to resident key storage
@@ -1223,9 +1227,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         fromHex(credentialIdHex, binCredId, binCredLen);
 
         // Check if stateless credential first
-        if (unwrapStatelessCredential(binCredId, binCredLen, String(targetRpId), storedUserIdHex, storedPrivateKeyHex, storedAlgId)) {
+        if (unwrapStatelessCredential(binCredId, binCredLen, String(targetRpId), storedUserIdHex, storedUserName,
+                               storedPrivateKeyHex, storedAlgId)) {
             storedRpId = String(targetRpId);
-            storedUserName = "Stateless User";
+            if (storedUserName.length() == 0) storedUserName = "Stateless User";
         } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
             uint8_t err = 0x2E;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -1691,7 +1696,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t binCredLen = credentialIdHex.length() / 2;
         fromHex(credentialIdHex, binCredId, binCredLen);
 
-        if (!unwrapStatelessCredential(binCredId, binCredLen, nextAssertionRpId, storedUserIdHex, storedPrivateKeyHex, storedAlgId)) {
+        if (!unwrapStatelessCredential(binCredId, binCredLen, nextAssertionRpId, storedUserIdHex, storedUserName,
+                                storedPrivateKeyHex, storedAlgId)) {
             if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId)) {
                 uint8_t err = 0x2E; // CTAP2_ERR_NO_CREDENTIALS
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -1700,7 +1706,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             }
         } else {
             storedRpId = nextAssertionRpId;
-            storedUserName = "Stateless User";
+            if (storedUserName.length() == 0) storedUserName = "Stateless User";
         }
 
         uint8_t authData[37] = {0};

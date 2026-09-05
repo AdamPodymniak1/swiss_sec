@@ -57,7 +57,10 @@ std::vector<String> findAllCredentialsByRp(const String &rpId);
 std::vector<String> getAllStoredCredentialIds();
 std::vector<String> getAllStoredRpIds();
 bool deletePasskeyRecord(const String &credentialIdHex);
-bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t userIdLen, const String &privateKeyHex, int algId, uint8_t *outCredId, size_t &outCredIdLen);
-bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const String &rpId, String &outUserIdHex, String &outPrivateKeyHex, int &outAlgId);
+bool wrapStatelessCredential(const String &rpId, const uint8_t *userId, size_t userIdLen, const String &userName, const String &privateKeyHex, int algId, uint8_t *outCredId, size_t &outCredIdLen);
+bool unwrapStatelessCredential(const uint8_t *credId, size_t credIdLen, const String &rpId, String &outUserIdHex, String &outUserName, String &outPrivateKeyHex, int &outAlgId);
+void rotateStatelessMasterSecret();
+static void getStatelessMasterSecret(uint8_t secretOut[32]);
+void rotateStatelessMasterSecret();
 
 #endif
