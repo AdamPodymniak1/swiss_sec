@@ -5,6 +5,7 @@
 #include "CryptoManager.h"
 #include "StorageManager.h"
 #include <vector>
+#include "esp_heap_caps.h"
 
 static std::vector<String> nextAssertionCreds;
 static size_t nextAssertionIdx = 0;
@@ -32,6 +33,102 @@ static bool sessionKeyValid = false;
 static uint8_t sessionSharedSecret[32];
 static uint8_t sessionAesKey[32];
 static uint8_t activeAuthToken[32];
+
+static const size_t ATTESTATION_CERT_LEN = 477;
+static const uint8_t attestationCertDer[ATTESTATION_CERT_LEN] = {
+    0x30, 0x82, 0x01, 0xD9, 0x30, 0x82, 0x01, 0x7F, 0xA0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14, 0x4C,
+    0x43, 0x73, 0x65, 0x35, 0xAF, 0xBE, 0xB0, 0xCC, 0x0D, 0x3A, 0x71, 0x56, 0xE1, 0x06, 0x57, 0xDA,
+    0x14, 0x8A, 0xE0, 0x30, 0x0A, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02, 0x30,
+    0x42, 0x31, 0x16, 0x30, 0x14, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x0D, 0x45, 0x78, 0x61, 0x6D,
+    0x70, 0x6C, 0x65, 0x20, 0x56, 0x61, 0x75, 0x6C, 0x74, 0x31, 0x28, 0x30, 0x26, 0x06, 0x03, 0x55,
+    0x04, 0x03, 0x0C, 0x1F, 0x45, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x20, 0x56, 0x61, 0x75, 0x6C,
+    0x74, 0x20, 0x46, 0x49, 0x44, 0x4F, 0x32, 0x20, 0x41, 0x74, 0x74, 0x65, 0x73, 0x74, 0x61, 0x74,
+    0x69, 0x6F, 0x6E, 0x30, 0x1E, 0x17, 0x0D, 0x32, 0x36, 0x30, 0x39, 0x30, 0x36, 0x31, 0x36, 0x35,
+    0x30, 0x31, 0x32, 0x5A, 0x17, 0x0D, 0x34, 0x36, 0x30, 0x39, 0x30, 0x31, 0x31, 0x36, 0x35, 0x30,
+    0x31, 0x32, 0x5A, 0x30, 0x42, 0x31, 0x16, 0x30, 0x14, 0x06, 0x03, 0x55, 0x04, 0x0A, 0x0C, 0x0D,
+    0x45, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x20, 0x56, 0x61, 0x75, 0x6C, 0x74, 0x31, 0x28, 0x30,
+    0x26, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x1F, 0x45, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x20,
+    0x56, 0x61, 0x75, 0x6C, 0x74, 0x20, 0x46, 0x49, 0x44, 0x4F, 0x32, 0x20, 0x41, 0x74, 0x74, 0x65,
+    0x73, 0x74, 0x61, 0x74, 0x69, 0x6F, 0x6E, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2A, 0x86, 0x48,
+    0xCE, 0x3D, 0x02, 0x01, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07, 0x03, 0x42,
+    0x00, 0x04, 0x55, 0x76, 0xC4, 0x3A, 0x8C, 0xD7, 0xBA, 0x26, 0xC2, 0xB5, 0x58, 0xD5, 0x22, 0xA6,
+    0x36, 0xBF, 0x92, 0xA5, 0x0A, 0xE1, 0x17, 0xB6, 0x66, 0x83, 0x69, 0x25, 0x67, 0x6B, 0x09, 0x0F,
+    0x0E, 0xD3, 0x51, 0x1B, 0xDC, 0x8E, 0xC9, 0xB2, 0x92, 0x7F, 0xB1, 0x1F, 0xA0, 0xF1, 0x94, 0xF6,
+    0x02, 0x1A, 0x25, 0x3D, 0xE8, 0xFD, 0x0A, 0x93, 0x61, 0x37, 0x27, 0x54, 0xA6, 0x9D, 0xB8, 0xC9,
+    0x0C, 0xAC, 0xA3, 0x53, 0x30, 0x51, 0x30, 0x1D, 0x06, 0x03, 0x55, 0x1D, 0x0E, 0x04, 0x16, 0x04,
+    0x14, 0x6F, 0xEF, 0x68, 0xBB, 0xAD, 0x12, 0x82, 0x8F, 0x54, 0xF3, 0x69, 0x19, 0x77, 0x4D, 0x98,
+    0x16, 0xEA, 0x24, 0x45, 0xE2, 0x30, 0x1F, 0x06, 0x03, 0x55, 0x1D, 0x23, 0x04, 0x18, 0x30, 0x16,
+    0x80, 0x14, 0x6F, 0xEF, 0x68, 0xBB, 0xAD, 0x12, 0x82, 0x8F, 0x54, 0xF3, 0x69, 0x19, 0x77, 0x4D,
+    0x98, 0x16, 0xEA, 0x24, 0x45, 0xE2, 0x30, 0x0F, 0x06, 0x03, 0x55, 0x1D, 0x13, 0x01, 0x01, 0xFF,
+    0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xFF, 0x30, 0x0A, 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D,
+    0x04, 0x03, 0x02, 0x03, 0x48, 0x00, 0x30, 0x45, 0x02, 0x21, 0x00, 0xC4, 0x7B, 0x3B, 0x86, 0xE0,
+    0xA1, 0x7D, 0x8F, 0x19, 0xF6, 0x58, 0xCE, 0x58, 0xA0, 0x5B, 0xE0, 0x76, 0xA6, 0x96, 0x5F, 0xE5,
+    0xD1, 0x24, 0x7B, 0x91, 0x94, 0x2B, 0x78, 0x79, 0x0B, 0xA6, 0xEB, 0x02, 0x20, 0x4F, 0xBD, 0x91,
+    0x5E, 0xA5, 0x84, 0x85, 0xD2, 0x1C, 0x03, 0x51, 0xD2, 0x0B, 0xC9, 0x94, 0x49, 0xFC, 0x0B, 0x5C,
+    0xBD, 0x79, 0x90, 0x47, 0xA2, 0x9A, 0x51, 0x2B, 0xB1, 0x79, 0xF6, 0x81, 0xA7
+};
+static const char* ATTESTATION_PRIVATE_KEY_HEX = "61e78d50d3eb95d5055093276317522b924c1374d249bb1797a86c9109d2078f";
+
+bool isAttestationProvisioned();
+bool loadAttestationCertChain(uint8_t* buf, size_t bufCap, size_t* outLen);
+bool saveAttestationCertChain(const uint8_t* buf, size_t len);
+bool loadAttestationPrivateKey(uint8_t privKeyOut[32]);
+bool saveAttestationPrivateKey(const uint8_t privKey[32]);
+String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex);
+bool deletePasskeyRecord(const String &credentialIdHex);
+
+static uint8_t attestationChainCache[ATTESTATION_CERT_LEN + 8];
+static size_t attestationChainCacheLen = 0;
+static uint8_t attestationPrivKeyCache[32];
+static bool attestationReady = false;
+
+static void loadDefaultAttestationIntoCache() {
+    size_t off = 0;
+    attestationChainCache[off++] = 1;
+    attestationChainCache[off++] = (uint8_t)((ATTESTATION_CERT_LEN >> 8) & 0xFF);
+    attestationChainCache[off++] = (uint8_t)(ATTESTATION_CERT_LEN & 0xFF);
+    memcpy(&attestationChainCache[off], attestationCertDer, ATTESTATION_CERT_LEN);
+    off += ATTESTATION_CERT_LEN;
+    attestationChainCacheLen = off;
+    fromHex(String(ATTESTATION_PRIVATE_KEY_HEX), attestationPrivKeyCache, 32);
+}
+
+void initFidoAttestation() {
+    if (attestationReady) return;
+
+    if (!isAttestationProvisioned()) {
+        uint8_t chainBlob[3 + ATTESTATION_CERT_LEN];
+        size_t off = 0;
+        chainBlob[off++] = 1;
+        chainBlob[off++] = (uint8_t)((ATTESTATION_CERT_LEN >> 8) & 0xFF);
+        chainBlob[off++] = (uint8_t)(ATTESTATION_CERT_LEN & 0xFF);
+        memcpy(&chainBlob[off], attestationCertDer, ATTESTATION_CERT_LEN);
+        off += ATTESTATION_CERT_LEN;
+
+        uint8_t defaultPrivKey[32];
+        fromHex(String(ATTESTATION_PRIVATE_KEY_HEX), defaultPrivKey, 32);
+
+        bool chainOk = saveAttestationCertChain(chainBlob, off);
+        bool keyOk = saveAttestationPrivateKey(defaultPrivKey);
+        memset(defaultPrivKey, 0, 32);
+    }
+
+    if (!loadAttestationCertChain(attestationChainCache, sizeof(attestationChainCache), &attestationChainCacheLen) ||
+        !loadAttestationPrivateKey(attestationPrivKeyCache)) {
+        loadDefaultAttestationIntoCache();
+    }
+
+    attestationReady = true;
+}
+
+static bool getLeafAttestationCert(const uint8_t** certOut, size_t* certLenOut) {
+    if (attestationChainCacheLen < 3) return false;
+    size_t certLen = ((size_t)attestationChainCache[1] << 8) | attestationChainCache[2];
+    if (3 + certLen > attestationChainCacheLen) return false;
+    *certOut = &attestationChainCache[3];
+    *certLenOut = certLen;
+    return true;
+}
 
 uint8_t dynamicAaguid[16] = {0};
 bool isAaguidInitialized = false;
@@ -88,8 +185,6 @@ void savePersistedSignCount(uint32_t count) {
     EEPROM.commit();
 }
 
-HardwareSerial DebugPort(0);
-
 bool fidoVerifyFingerprint() {
     if (getFailedUvAttempts() >= 5) {
         showDisplayMessage(1, "UV BLOCKED", "", 2000);
@@ -112,7 +207,7 @@ bool fidoVerifyFingerprint() {
     }
     if (img == FINGERPRINT_NOFINGER) {
         xSemaphoreGive(fingerprintMutex);
-        return false;
+        return false; // no finger placed yet, not an error, caller keeps polling
     }
     if (img != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
@@ -171,8 +266,8 @@ FIDO2HIDDevice::FIDO2HIDDevice() {
 }
 
 void FIDO2HIDDevice::begin() {
-    DebugPort.begin(115200, SERIAL_8N1, 44, 43);
     initializeDynamicAaguid();
+    initFidoAttestation();
     hid.begin();
 }
 
@@ -288,6 +383,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         savePasskeyRecord(khHex, appIdHex, "", "", privHex, -7);
 
         memset(privKey, 0, sizeof(privKey));
+        secureWipe(privHex);
 
         uint8_t sigData[150];
         sigData[0] = 0x00;
@@ -298,9 +394,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
 
         uint8_t* sig = nullptr;
         size_t sigLen = 0;
-        bool signOk = generateAlgSignature(-7, privHex, sigData, 146, &sig, &sigLen);
-
-        secureWipe(privHex);
+        bool signOk = generateAlgSignature(-7, toHex(attestationPrivKeyCache, 32), sigData, 146, &sig, &sigLen);
 
         if (!signOk) {
             uint8_t err[] = {0x6F, 0x00};
@@ -308,21 +402,37 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
             return;
         }
 
-        uint8_t resp[300];
-        resp[0] = 0x05;
-        memcpy(&resp[1], pubKey, 65);
-        resp[66] = 16;
-        memcpy(&resp[67], kh, 16);
+        const uint8_t* leafCert = nullptr;
+        size_t leafCertLen = 0;
+        if (!getLeafAttestationCert(&leafCert, &leafCertLen)) {
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, CTAPHID_MSG, err, 2);
+            free(sig);
+            return;
+        }
 
-        uint8_t dummyCert[] = {0x30, 0x82, 0x01, 0x13};
-        memcpy(&resp[83], dummyCert, 4);
+        size_t respLen = 1 + 65 + 1 + 16 + leafCertLen + sigLen + 2;
+        uint8_t* resp = (uint8_t*)malloc(respLen);
+        if (!resp) {
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, CTAPHID_MSG, err, 2);
+            free(sig);
+            return;
+        }
 
-        memcpy(&resp[87], sig, sigLen);
-        resp[87 + sigLen] = 0x90;
-        resp[88 + sigLen] = 0x00;
+        size_t off = 0;
+        resp[off++] = 0x05;
+        memcpy(&resp[off], pubKey, 65); off += 65;
+        resp[off++] = 16;
+        memcpy(&resp[off], kh, 16); off += 16;
+        memcpy(&resp[off], leafCert, leafCertLen); off += leafCertLen;
+        memcpy(&resp[off], sig, sigLen); off += sigLen;
+        resp[off++] = 0x90;
+        resp[off++] = 0x00;
 
-        sendCtapResponse(channel, CTAPHID_MSG, resp, 89 + sigLen);
+        sendCtapResponse(channel, CTAPHID_MSG, resp, off);
         free(sig);
+        free(resp);
     }
     else if (ins == 0x02) {
         if (reqLen < 65) {
@@ -475,7 +585,6 @@ void FIDO2HIDDevice::processCtapCommand(uint32_t channel, uint8_t cmd, uint8_t* 
 void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_t len) {
     if (len == 0) return;
     uint8_t ctap2Cmd = data[0];
-
 
     uint8_t* responseBuffer = (uint8_t*)malloc(8192);
     if (!responseBuffer) {
@@ -864,7 +973,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     bool res;
                 } ctx = {&privateKeyHex, pubKeyData, &pubKeyLen, rsaE, &rsaELen, false, false};
 
-                xTaskCreatePinnedToCore([](void* p) {
+                BaseType_t taskRc = xTaskCreatePinnedToCore([](void* p) {
                     AsyncRsaKeygen* c = (AsyncRsaKeygen*)p;
                     c->res = generateRsa2048KeyPair(*(c->pk), c->pub, c->pLen, c->e, c->eLen);
                     c->done = true;
@@ -872,6 +981,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 }, "RSA_Keygen", 65536, &ctx, 1, NULL, 1);
 
                 unsigned long lastKeepAlive = millis();
+                unsigned long keygenStart = millis();
                 while (!ctx.done) {
                     if (millis() - lastKeepAlive > 300) {
                         uint8_t status = 0x02;
@@ -900,7 +1010,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     int alg; uint8_t* priv; uint8_t* pub; volatile bool done; bool res;
                 } ctx = {selectedAlgId, privKeyData, pubKeyData, false, false};
 
-                xTaskCreatePinnedToCore([](void* p){
+                BaseType_t taskRc = xTaskCreatePinnedToCore([](void* p){
                     AsyncKeygen* c = (AsyncKeygen*)p;
                     c->res = generateMlDsaKeyPair(c->alg, c->priv, c->pub);
                     c->done = true;
@@ -908,6 +1018,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 }, "PQC_Keygen", 131072, &ctx, 1, NULL, 1);
 
                 unsigned long lastKeepAlive = millis();
+                unsigned long keygenStart = millis();
                 while (!ctx.done) {
                     if (millis() - lastKeepAlive > 300) {
                         uint8_t status = 0x02;
@@ -961,7 +1072,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             for(int i = 0; i < 16; i++) rawCredId[i] = esp_random() & 0xFF;
             String credentialIdHex = toHex(rawCredId, 16);
 
-            if (!savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId, requestedCredProtect, largeBlobKeyHex)) {
+            String existingCredIdHex = findCredentialIdByRpAndUser(String(targetRpId), userIdHex);
+            if (existingCredIdHex.length() > 0) {
+                bool deletedOk = deletePasskeyRecord(existingCredIdHex);
+            }
+
+            bool saveOk = savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId, requestedCredProtect, largeBlobKeyHex);
+            if (!saveOk) {
                 showDisplayMessage(1, "SAVE FAILED", "", 0);
                 uint8_t err = 0x21;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -971,8 +1088,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 return;
             }
         } else {
-            if (!wrapStatelessCredential(String(targetRpId), userIdRaw, userIdLen, String(userName),
-                              privateKeyHex, selectedAlgId, rawCredId, rawCredIdLen)) {
+            bool wrapOk = wrapStatelessCredential(String(targetRpId), userIdRaw, userIdLen, String(userName),
+                              privateKeyHex, selectedAlgId, rawCredId, rawCredIdLen);
+            if (!wrapOk) {
                 showDisplayMessage(1, "WRAP FAILED", "", 0);
                 uint8_t err = 0x01;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
@@ -1099,7 +1217,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             uint8_t** sig; size_t* sLen; volatile bool done; bool res;
         } sCtx = {selectedAlgId, privateKeyHex, rawMsg, rawMsgLen, &attestationSig, &attestationSigLen, false, false};
 
-        xTaskCreatePinnedToCore([](void* p){
+        BaseType_t signTaskRc = xTaskCreatePinnedToCore([](void* p){
             AsyncSign* c = (AsyncSign*)p;
             c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
             c->done = true;
@@ -1107,6 +1225,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }, "PQC_Sign", 131072, &sCtx, 1, NULL, 1);
 
         unsigned long lastKeepAliveSig = millis();
+        unsigned long signStart = millis();
         while (!sCtx.done) {
             if (millis() - lastKeepAliveSig > 300) {
                 uint8_t status = 0x02;
@@ -1451,7 +1570,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             uint8_t** sig; size_t* sLen; volatile bool done; bool res;
         } sCtx = {storedAlgId, storedPrivateKeyHex, signBuffer, sizeof(signBuffer), &signatureASN1, &finalSigLen, false, false};
 
-        xTaskCreatePinnedToCore([](void* p){
+        BaseType_t gaSignTaskRc = xTaskCreatePinnedToCore([](void* p){
             AsyncSignAuth* c = (AsyncSignAuth*)p;
             c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
             c->done = true;
@@ -1459,6 +1578,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }, "PQC_SignAuth", 131072, &sCtx, 1, NULL, 1);
 
         unsigned long lastKeepAliveAuth = millis();
+        unsigned long gaSignStart = millis();
         while (!sCtx.done) {
             if (millis() - lastKeepAliveAuth > 300) {
                 uint8_t status = 0x02;
@@ -1874,7 +1994,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             uint8_t** sig; size_t* sLen; volatile bool done; bool res;
         } sCtx = {storedAlgId, storedPrivateKeyHex, signBuffer, sizeof(signBuffer), &signatureASN1, &finalSigLen, false, false};
 
-        xTaskCreatePinnedToCore([](void* p){
+        BaseType_t gnaSignTaskRc = xTaskCreatePinnedToCore([](void* p){
             AsyncSignAuth* c = (AsyncSignAuth*)p;
             c->res = generateAlgSignature(c->alg, c->pk, c->msg, c->mLen, c->sig, c->sLen);
             c->done = true;
@@ -1882,6 +2002,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }, "PQC_SignAuthNext", 131072, &sCtx, 1, NULL, 1);
 
         unsigned long lastKeepAliveAuth = millis();
+        unsigned long gnaSignStart = millis();
         while (!sCtx.done) {
             if (millis() - lastKeepAliveAuth > 300) {
                 uint8_t status = 0x02;

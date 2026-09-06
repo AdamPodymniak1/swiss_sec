@@ -79,4 +79,11 @@ void incrementFailedFidoPinAttempts();
 void resetFailedFidoPinAttempts();
 bool verifyFidoPinInternal(const String& pin);
 
+bool isAttestationProvisioned();
+bool loadAttestationCertChain(uint8_t* buf, size_t bufCap, size_t* outLen);
+bool saveAttestationCertChain(const uint8_t* buf, size_t len);
+bool loadAttestationPrivateKey(uint8_t privKeyOut[32]);
+bool saveAttestationPrivateKey(const uint8_t privKey[32]);
+bool eraseAttestationProvisioning();
+
 #endif

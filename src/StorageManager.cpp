@@ -678,6 +678,9 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &us
 }
 
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) {
+    byte fidoKey[32];
+    getFidoHardwareKey(fidoKey);
+
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     File file = SPIFFS.open("/passkeys.bin", "r");
     if (!file) {
@@ -704,7 +707,7 @@ String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) 
                 String encryptedPayload(payBuf);
                 free(payBuf);
                 
-                String decryptedPayload = decryptStoragePayload(encryptedPayload, storageKey);
+                String decryptedPayload = decryptStoragePayload(encryptedPayload, fidoKey);
                 if (decryptedPayload != "") {
                     int firstNewline = decryptedPayload.indexOf('\n');
                     if (firstNewline != -1) {
@@ -1448,6 +1451,65 @@ void rotateStatelessMasterSecret() {
         nvs_commit(h);
         nvs_close(h);
     }
+}
+
+static const size_t ATTESTATION_CHAIN_MAX_LEN = 2048;
+
+bool isAttestationProvisioned() {
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = 0;
+    esp_err_t err = nvs_get_blob(h, "chain", NULL, &len);
+    nvs_close(h);
+    return err == ESP_OK && len > 0;
+}
+
+bool loadAttestationCertChain(uint8_t* buf, size_t bufCap, size_t* outLen) {
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = bufCap;
+    esp_err_t err = nvs_get_blob(h, "chain", buf, &len);
+    nvs_close(h);
+    if (err != ESP_OK || len == 0) return false;
+    *outLen = len;
+    return true;
+}
+
+bool saveAttestationCertChain(const uint8_t* buf, size_t len) {
+    if (len == 0 || len > ATTESTATION_CHAIN_MAX_LEN) return false;
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_set_blob(h, "chain", buf, len);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+bool loadAttestationPrivateKey(uint8_t privKeyOut[32]) {
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = 32;
+    esp_err_t err = nvs_get_blob(h, "privkey", privKeyOut, &len);
+    nvs_close(h);
+    return err == ESP_OK && len == 32;
+}
+
+bool saveAttestationPrivateKey(const uint8_t privKey[32]) {
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = nvs_set_blob(h, "privkey", privKey, 32);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+bool eraseAttestationProvisioning() {
+    nvs_handle_t h;
+    if (nvs_open("fido_attest", NVS_READWRITE, &h) != ESP_OK) return false;
+    nvs_erase_all(h);
+    esp_err_t err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
 }
 
 int getFailedUvAttempts() {

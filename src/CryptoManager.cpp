@@ -1,4 +1,5 @@
 #include "CryptoManager.h"
+
 #include <Arduino.h>
 #include "mbedtls/md.h"
 #include "mbedtls/gcm.h"
@@ -410,7 +411,8 @@ bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65) {
                                          &writtenLen, publicKeyOut65, 65);
 
     mbedtls_ecdsa_free(&ctx);
-    return (ret == 0 && writtenLen == 65);
+    bool ok = (ret == 0 && writtenLen == 65);
+    return ok;
 }
 
 #if MBEDTLS_VERSION_NUMBER >= 0x03000000
@@ -452,19 +454,16 @@ bool signECDSA_P256(const uint8_t *privateKey32, const uint8_t *digest32, size_t
     }
 
     ret = mbedtls_asn1_write_mpi(&p, buf, &s);
-    if (ret <= 0) goto cleanup;
     len += ret;
 
     ret = mbedtls_asn1_write_mpi(&p, buf, &r);
-    if (ret <= 0) goto cleanup;
     len += ret;
 
     ret = mbedtls_asn1_write_len(&p, buf, len);
-    if (ret <= 0) goto cleanup;
     len += ret;
 
     ret = mbedtls_asn1_write_tag(&p, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
-    if (ret <= 0) goto cleanup;
+    if (ret <= 0) { goto cleanup; }
     len += ret;
 
     if ((size_t)len > maxSigCapacity) {
