@@ -166,7 +166,49 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
 
 ---
 
-# Project Todo & Development Roadmap
+## FIDO2 Attestation Certificate Provisioning
+
+SwissSec presents an X.509 batch attestation certificate during legacy U2F/CTAP1 registration, so relying parties can verify the credential came from genuine SwissSec hardware rather than an arbitrary software authenticator. The certificate chain and its matching EC P-256 private key are stored in the ESP32's NVS (`fido_attest` namespace) — **never compiled into the firmware source**, and never committed to this repository.
+
+### Why there's no cert in this repo
+
+An attestation private key only means something if it's secret. Baking a real batch key into source that's built into every unit (and potentially into a public repo) means anyone who reads the code owns the key, and can forge "genuine hardware" attestations against it, the opposite of what attestation is for. This repo's `.gitignore` explicitly excludes generated key/cert material (`*.pem`, `*.der`, `attestation_test/`, `provisioning*.bin`, `provisioning*.csv`) so a locally-generated test identity can never end up in a commit by accident.
+
+Devices ship with **no attestation identity provisioned by default**, and the firmware enforces this: `setup()` checks for a provisioned identity right after USB init and, if none is found, shows `PROVISIONING / REQUIRED` on the OLED and halts, an unprovisioned unit will not boot into normal operation.
+
+### Generating your own (test / bench identity)
+
+For local development and bench testing, generate a self-signed P-256 identity with OpenSSL:
+
+```bash
+./gen_test_attestation.sh ./attestation_test 3650
+```
+
+This produces `attest_key.pem` (EC private key), `attest_cert.pem`, and `attest_cert.der` (what actually gets stored on-device). This is a self-signed test cert, not a real CA-issued batch chain — fine for bring-up, not for units you intend to ship.
+
+### Provisioning a device
+
+Provisioning is deliberately kept out of the normal, always-available command set. Two supported paths, both bench-only:
+
+1. **Dedicated factory-provisioning firmware** (`FactoryProvisioning.cpp`, built with `-D FACTORY_PROVISIONING_BUILD`) - a minimal, separate build that does nothing but accept one identity over serial, write it to NVS, and confirm. Reflash the normal firmware afterward.
+2. **Dev-only serial command** (`AttestationProvisioningCmd.cpp`, built with `-D ALLOW_ATTESTATION_PROVISIONING_CMD` - see the `esp32s3-bench` environment in `platformio.ini`) — adds a `PROVISION_ATTESTATION` command to the normal PIN-authenticated command router, for faster bench iteration without reflashing.
+
+Either way, from the host side:
+
+```bash
+pip install pyserial cryptography
+python provision_device.py --key attestation_test/attest_key.pem --cert attestation_test/attest_cert.der --port COM19
+```
+
+**`ALLOW_ATTESTATION_PROVISIONING_CMD` must never be defined in a release build.** With it enabled, anyone who obtains the device PIN can rewrite the attestation identity at runtime over USB, which defeats the purpose of provisioning once at manufacture time. Keep it strictly to a separate PlatformIO environment used only for your own bench hardware.
+
+### Production batch identity
+
+For units that will actually ship, generate a real batch key/cert offline (ideally chained to an offline root CA you control, not self-signed), and flash it onto each unit at manufacture time using one of the two provisioning paths above, on infrastructure that never touches the shared/public firmware build.
+
+---
+
+
 
 ## Completed Milestones
 
@@ -241,7 +283,7 @@ This project is built for the ESP32-S3 microcontroller. It requires an SSD1306 S
   * [x] Stateless Credentials (Non-Resident Keys support)
 * [x] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.
 * [x] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
-* [ ] **X.509 certificate:** Save a verifiable X.509 batch certificate chain to NVS. Add it to .gitignore and add instructions on how to get your own certificate in readme.
+* [x] **X.509 certificate:** Save a verifiable X.509 batch certificate chain to NVS. Added to `.gitignore` and documented below under [FIDO2 Attestation Certificate Provisioning](#fido2-attestation-certificate-provisioning).
 
 ### Backup, Recovery, & Others
 * [ ] **Encrypted Backup Solutions:** Architect a secure, user-controlled export/import mechanism for offline backup and recovery.

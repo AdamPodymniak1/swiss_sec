@@ -14,6 +14,12 @@
 #include "USB.h"
 #include "USBCDC.h"
 
+extern bool isBatchAttestationAvailable();
+
+#ifdef ALLOW_ATTESTATION_PROVISIONING_CMD
+extern bool provisionAttestationFromHex(const String &privHex, const String &certHex, String &errorOut);
+#endif
+
 void fidoTask(void *pvParameters) {
     while (1) {
         FidoHID.poll();
@@ -101,7 +107,6 @@ void cliTask(void *pvParameters) {
                 continue;
             }
 
-            // Authenticated Command Router
             if (cmd == "help") {
                 JsonDocument data;
                 data["commands"][0] = "SAVE_PASS";
@@ -256,6 +261,18 @@ void cliTask(void *pvParameters) {
                     CommsManager::sendError("AUTH", "ENROLL_FAILED");
                 }
             }
+#ifdef ALLOW_ATTESTATION_PROVISIONING_CMD
+            else if (cmd == "PROVISION_ATTESTATION") {
+                String privHex = req["privkey"] | "";
+                String certHex = req["cert"] | "";
+                String err;
+                if (provisionAttestationFromHex(privHex, certHex, err)) {
+                    CommsManager::sendEvent("FIDO2", "ATTESTATION_PROVISIONED");
+                } else {
+                    CommsManager::sendError("FIDO2", "PROVISION_FAILED", err);
+                }
+            }
+#endif
             else if (cmd == "FACTORY_RESET") {
                 factoryResetSystem();
                 clearStorageKey();
@@ -271,6 +288,7 @@ void cliTask(void *pvParameters) {
     }
 }
 
+#ifndef FACTORY_PROVISIONING_BUILD
 void setup() {
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
@@ -288,6 +306,15 @@ void setup() {
 
     Serial.begin(115200);
     FidoHID.begin();
+
+    if (!isBatchAttestationAvailable()) {
+        Serial.println("[SYS:FATAL] No FIDO2 attestation identity provisioned. Refusing to boot.");
+        showDisplayMessage(2, "PROVISIONING", "REQUIRED", 0);
+        while (1) {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    }
+
     USB.begin();
 
     initCrypto();
@@ -307,3 +334,4 @@ void setup() {
 void loop() {
     vTaskDelete(NULL);
 }
+#endif

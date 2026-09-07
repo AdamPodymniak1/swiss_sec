@@ -4,3 +4,9 @@
 .vscode/launch.json
 .vscode/ipch
 _testing
+
+attestation_test/
+*.pem
+*.der
+provisioning*.bin
+provisioning*.csv
