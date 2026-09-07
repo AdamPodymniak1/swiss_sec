@@ -171,6 +171,16 @@ static bool constantTimeStringEquals(const String& a, const String& b) {
     return constantTimeEquals((const uint8_t*)a.c_str(), (const uint8_t*)b.c_str(), a.length());
 }
 
+static bool rpFieldMatchesPlainRpId(const String& storedRpField, const String& plainRpId) {
+    if (constantTimeStringEquals(storedRpField, plainRpId)) return true;
+    return constantTimeStringEquals(storedRpField, hashSHA256(plainRpId));
+}
+
+static bool rpFieldMatchesHash(const String& storedRpField, const String& hashHex) {
+    if (constantTimeStringEquals(storedRpField, hashHex)) return true;
+    return constantTimeStringEquals(hashSHA256(storedRpField), hashHex);
+}
+
 uint32_t loadPersistedSignCount() {
     uint32_t count = 0;
     EEPROM.begin(512);
@@ -207,7 +217,7 @@ bool fidoVerifyFingerprint() {
     }
     if (img == FINGERPRINT_NOFINGER) {
         xSemaphoreGive(fingerprintMutex);
-        return false; // no finger placed yet, not an error, caller keeps polling
+        return false;
     }
     if (img != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
@@ -448,7 +458,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         String storedAppId, dummyUser, dummyName, privHex;
         int alg;
 
-        if (!getPasskeyRecord(khHex, storedAppId, dummyUser, dummyName, privHex, alg) || !constantTimeStringEquals(storedAppId, appIdHex)) {
+        if (!getPasskeyRecord(khHex, storedAppId, dummyUser, dummyName, privHex, alg) || !rpFieldMatchesHash(storedAppId, appIdHex)) {
             uint8_t err[] = {0x6A, 0x80};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
             return;
@@ -884,7 +894,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 String dummyRpId, dummyUserId, dummyUser, dummyKey;
                 int dummyAlgId;
                 if (getPasskeyRecord(candidateIdHex, dummyRpId, dummyUserId, dummyUser, dummyKey, dummyAlgId)) {
-                    if (constantTimeStringEquals(dummyRpId, String(targetRpId))) {
+                    if (rpFieldMatchesPlainRpId(dummyRpId, String(targetRpId))) {
                         uint8_t err = 0x19;
                         sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                         free(responseBuffer);
@@ -1424,7 +1434,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     matchedCreds.push_back(candidateIdHex);
                 }
 
-                else if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && constantTimeStringEquals(candidateRpId, String(targetRpId))) {
+                else if (getPasskeyRecord(candidateIdHex, candidateRpId, candidateUserIdHex, candidateUserName, candidatePrivateKeyHex, candidateAlgId) && rpFieldMatchesPlainRpId(candidateRpId, String(targetRpId))) {
                     matchedCreds.push_back(candidateIdHex);
                 }
             }
@@ -1638,8 +1648,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         CborEncoder localEncoder(&localRespBuf[1], 8191);
 
         bool includeLargeBlobKey = largeBlobKeyRequested && storedLargeBlobKeyHex.length() == 64;
+        bool includeUserEntity = storedUserIdHex.length() > 0;
 
-        size_t mapItems = 4;
+        size_t mapItems = 3;
+        if (includeUserEntity) mapItems++;
         if (extensionRequested) mapItems++;
         if (matchedCreds.size() > 1) mapItems++;
         if (includeLargeBlobKey) mapItems++;
@@ -1658,17 +1670,19 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeUnsignedInt(0x03);
         localEncoder.writeByteString(signatureASN1, finalSigLen);
 
-        localEncoder.writeUnsignedInt(0x04);
-        localEncoder.writeMapHeader(3);
-        localEncoder.writeTextString("id");
-        uint8_t rawUserIdBytes[64];
-        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
-        fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeTextString("name");
-        localEncoder.writeTextString(storedUserName.c_str());
-        localEncoder.writeTextString("displayName");
-        localEncoder.writeTextString(storedUserName.c_str());
+        if (includeUserEntity) {
+            localEncoder.writeUnsignedInt(0x04);
+            localEncoder.writeMapHeader(3);
+            localEncoder.writeTextString("id");
+            uint8_t rawUserIdBytes[64];
+            size_t parsedUserIdLen = storedUserIdHex.length() / 2;
+            fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
+            localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
+            localEncoder.writeTextString("name");
+            localEncoder.writeTextString(storedUserName.c_str());
+            localEncoder.writeTextString("displayName");
+            localEncoder.writeTextString(storedUserName.c_str());
+        }
 
         if (matchedCreds.size() > 1) {
             localEncoder.writeUnsignedInt(0x05);
@@ -2055,9 +2069,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localRespBuf[0] = 0x00;
 
         bool includeLargeBlobKey = nextAssertionLargeBlobReq && storedLargeBlobKeyHex.length() == 64;
+        bool includeUserEntity = storedUserIdHex.length() > 0;
 
         CborEncoder localEncoder(&localRespBuf[1], 8191);
-        size_t mapItems = 4;
+        size_t mapItems = 3;
+        if (includeUserEntity) mapItems++;
         if (nextAssertionExtReq) mapItems++;
         if (includeLargeBlobKey) mapItems++;
         localEncoder.writeMapHeader(mapItems);
@@ -2075,17 +2091,19 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         localEncoder.writeUnsignedInt(0x03);
         localEncoder.writeByteString(signatureASN1, finalSigLen);
 
-        localEncoder.writeUnsignedInt(0x04);
-        localEncoder.writeMapHeader(3);
-        localEncoder.writeTextString("id");
-        uint8_t rawUserIdBytes[64];
-        size_t parsedUserIdLen = storedUserIdHex.length() / 2;
-        fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
-        localEncoder.writeTextString("name");
-        localEncoder.writeTextString(storedUserName.c_str());
-        localEncoder.writeTextString("displayName");
-        localEncoder.writeTextString(storedUserName.c_str());
+        if (includeUserEntity) {
+            localEncoder.writeUnsignedInt(0x04);
+            localEncoder.writeMapHeader(3);
+            localEncoder.writeTextString("id");
+            uint8_t rawUserIdBytes[64];
+            size_t parsedUserIdLen = storedUserIdHex.length() / 2;
+            fromHex(storedUserIdHex, rawUserIdBytes, parsedUserIdLen);
+            localEncoder.writeByteString(rawUserIdBytes, parsedUserIdLen);
+            localEncoder.writeTextString("name");
+            localEncoder.writeTextString(storedUserName.c_str());
+            localEncoder.writeTextString("displayName");
+            localEncoder.writeTextString(storedUserName.c_str());
+        }
 
         if (includeLargeBlobKey) {
             localEncoder.writeUnsignedInt(0x07);
@@ -2671,6 +2689,14 @@ void FIDO2HIDDevice::_onOutput(uint8_t report_id, const uint8_t* buffer, uint16_
     if (buffer[4] & 0x80) {
         uint8_t cmd = buffer[4];
 
+        if (cmd == CTAPHID_CANCEL) {
+            pendingChannel = channel;
+            pendingCmd = CTAPHID_CANCEL;
+            pendingLen = 0;
+            hasPendingCommand = true;
+            return;
+        }
+
         if (hasPendingCommand && channel == pendingChannel) {
             return;
         }
@@ -2777,6 +2803,12 @@ void FIDO2HIDDevice::poll() {
     uint32_t ch   = pendingChannel;
     uint8_t  cmd  = pendingCmd;
     uint16_t dlen = pendingLen;
+
+    if (dlen == 0) {
+        hasPendingCommand = false;
+        processCtapCommand(ch, cmd, nullptr, 0);
+        return;
+    }
 
     uint8_t* data = (uint8_t*)malloc(dlen);
     if (!data) {
