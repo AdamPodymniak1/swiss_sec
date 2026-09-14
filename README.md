@@ -281,7 +281,7 @@ For units that will actually ship, generate a real batch key/cert offline (ideal
   * [x] Credential Management API (Command `0x0A`)
   * [ ] Bio Enrollment (Command `0x09`)
   * [x] Stateless Credentials (Non-Resident Keys support)
-* [x] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, and `alwaysUv`.
+* [x] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, credBlob, and`alwaysUv`.
 * [x] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
 * [x] **X.509 certificate:** Save a verifiable X.509 batch certificate chain to NVS. Added to `.gitignore` and documented below under [FIDO2 Attestation Certificate Provisioning](#fido2-attestation-certificate-provisioning).
 
