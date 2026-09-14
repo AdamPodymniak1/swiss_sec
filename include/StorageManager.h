@@ -11,7 +11,7 @@ void clearStorageKey();
 bool initStorage();
 String hashPin(const String &pin);
 bool isPinSet();
-void createPin(const String &pin);
+bool createPin(const String &pin);
 bool verifyPin(const String &pin);
 int getFailedPinAttempts();
 void incrementFailedPinAttempts();
@@ -55,7 +55,7 @@ int loadDefaultCryptoAlg();
 void secureWipe(String &str);
 
 bool isFidoPinSet();
-void createFidoPin(const String &pin);
+bool createFidoPin(const String &pin);
 int getFailedFidoPinAttempts();
 void resetFido2System();
 std::vector<String> findAllCredentialsByRp(const String &rpId);

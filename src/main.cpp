@@ -84,8 +84,11 @@ void cliTask(void *pvParameters) {
 
             if (!isPinSet()) {
                 if (cmd == "CREATE_PIN" || cmd == "set_pin") {
-                    createPin(req["pin"] | "");
-                    CommsManager::sendEvent("AUTH", "PIN_CREATED");
+                    if (createPin(req["pin"] | "")) {
+                        CommsManager::sendEvent("AUTH", "PIN_CREATED");
+                    } else {
+                        CommsManager::sendError("AUTH", "PIN_TOO_SHORT");
+                    }
                 } else {
                     CommsManager::sendError("AUTH", "NEW_PIN_REQ");
                 }

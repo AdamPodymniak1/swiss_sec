@@ -67,6 +67,11 @@ bool loadAttestationPrivateKey(uint8_t privKeyOut[32]);
 bool saveAttestationPrivateKey(const uint8_t privKey[32]);
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex);
 bool deletePasskeyRecord(const String &credentialIdHex);
+bool verifyFidoPinHashInternal(const uint8_t pinHash16[16]);
+bool fidoEcdhSharedSecret(const uint8_t devicePriv32[32], const uint8_t peerXY64[64], uint8_t sharedOut32[32]);
+bool aesCbcZeroIvEncrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out);
+bool aesCbcZeroIvDecrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out);
+void hmacSha256Raw(const uint8_t key32[32], const uint8_t *data, size_t len, uint8_t out32[32]);
 
 static uint8_t attestationChainCache[2048];
 static size_t attestationChainCacheLen = 0;
@@ -610,6 +615,42 @@ void FIDO2HIDDevice::processCtapCommand(uint32_t channel, uint8_t cmd, uint8_t* 
         uint8_t err = 0x01;
         sendCtapResponse(channel, CTAPHID_ERROR, &err, 1);
     }
+}
+
+static bool parseCoseKeyPubXY(CborParser &parser, uint8_t xyOut[64]) {
+    uint8_t mapType;
+    uint64_t mapLen;
+    if (!parser.readTypeAndValue(mapType, mapLen) || mapType != 5) return false;
+
+    bool gotX = false, gotY = false;
+    for (uint64_t i = 0; i < mapLen; i++) {
+        uint8_t keyType;
+        uint64_t keyVal;
+        if (!parser.readTypeAndValue(keyType, keyVal)) return false;
+
+        if (keyType == 1 && keyVal == 1) {
+            uint8_t xBuf[32];
+            size_t xLen = 0;
+            if (parser.readByteString(xBuf, sizeof(xBuf), xLen) && xLen == 32) {
+                memcpy(xyOut, xBuf, 32);
+                gotX = true;
+            } else {
+                parser.skipValue();
+            }
+        } else if (keyType == 1 && keyVal == 2) {
+            uint8_t yBuf[32];
+            size_t yLen = 0;
+            if (parser.readByteString(yBuf, sizeof(yBuf), yLen) && yLen == 32) {
+                memcpy(xyOut + 32, yBuf, 32);
+                gotY = true;
+            } else {
+                parser.skipValue();
+            }
+        } else {
+            parser.skipValue();
+        }
+    }
+    return gotX && gotY;
 }
 
 void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_t len) {
@@ -1791,9 +1832,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                     uint8_t valType;
                     if (!parser.readTypeAndValue(valType, subCommand)) parser.skipValue();
                 } else if (mapKey == 0x03) {
-                    if (!parser.readByteString(keyAgreement, sizeof(keyAgreement), keyAgreementLen)) {
-                        parser.skipValue();
-                    }
+                    keyAgreementLen = parseCoseKeyPubXY(parser, keyAgreement) ? 64 : 0;
                 } else if (mapKey == 0x04) {
                     if (!parser.readByteString(pinAuth, sizeof(pinAuth), pinAuthLen)) {
                         parser.skipValue();
@@ -1831,9 +1870,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         else if (subCommand == 0x02) {
-            uint8_t privKey[32];
             uint8_t pubKey[65];
-            generateKeypairP256(privKey, pubKey);
+            generateKeypairP256(sessionPrivateKey, pubKey);
+            sessionKeyValid = true;
 
             encoder.writeMapHeader(1);
             encoder.writeUnsignedInt(0x01);
@@ -1852,8 +1891,46 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 free(responseBuffer);
                 return;
             }
-            String decryptedPin = toHex(newPinEnc, newPinEncLen > 0 ? newPinEncLen : 4);
-            createFidoPin(decryptedPin);
+            if (!sessionKeyValid || keyAgreementLen != 64 || newPinEncLen != 64 || pinAuthLen < 16 ||
+                !fidoEcdhSharedSecret(sessionPrivateKey, keyAgreement, sessionSharedSecret)) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            uint8_t expectedAuth[32];
+            hmacSha256Raw(sessionSharedSecret, newPinEnc, newPinEncLen, expectedAuth);
+            if (memcmp(expectedAuth, pinAuth, 16) != 0) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            uint8_t paddedPin[64];
+            if (!aesCbcZeroIvDecrypt(sessionSharedSecret, newPinEnc, 64, paddedPin)) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            size_t pinLen = 0;
+            while (pinLen < 64 && paddedPin[pinLen] != 0x00) pinLen++;
+            String decryptedPin;
+            decryptedPin.reserve(pinLen);
+            for (size_t i = 0; i < pinLen; i++) decryptedPin += (char)paddedPin[i];
+            memset(paddedPin, 0, sizeof(paddedPin));
+
+            bool created = createFidoPin(decryptedPin);
+            decryptedPin = "";
+            if (!created) {
+                uint8_t err = 0x37;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
             encoder.writeMapHeader(0);
         }
 
@@ -1864,8 +1941,65 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 free(responseBuffer);
                 return;
             }
-            String decryptedNewPin = toHex(newPinEnc, newPinEncLen > 0 ? newPinEncLen : 4);
-            createFidoPin(decryptedNewPin);
+            if (getFailedFidoPinAttempts() >= 10) {
+                uint8_t err = 0x32;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (!sessionKeyValid || keyAgreementLen != 64 || newPinEncLen != 64 || pinHashEncLen != 16 || pinAuthLen < 16 ||
+                !fidoEcdhSharedSecret(sessionPrivateKey, keyAgreement, sessionSharedSecret)) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            uint8_t authMsg[80];
+            memcpy(authMsg, newPinEnc, 64);
+            memcpy(authMsg + 64, pinHashEnc, 16);
+            uint8_t expectedAuth[32];
+            hmacSha256Raw(sessionSharedSecret, authMsg, sizeof(authMsg), expectedAuth);
+            if (memcmp(expectedAuth, pinAuth, 16) != 0) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            uint8_t oldPinHash[16];
+            if (!aesCbcZeroIvDecrypt(sessionSharedSecret, pinHashEnc, 16, oldPinHash) ||
+                !verifyFidoPinHashInternal(oldPinHash)) {
+                incrementFailedFidoPinAttempts();
+                uint8_t err = 0x31;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            resetFailedFidoPinAttempts();
+
+            uint8_t paddedPin[64];
+            if (!aesCbcZeroIvDecrypt(sessionSharedSecret, newPinEnc, 64, paddedPin)) {
+                uint8_t err = 0x30;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            size_t pinLen = 0;
+            while (pinLen < 64 && paddedPin[pinLen] != 0x00) pinLen++;
+            String decryptedNewPin;
+            decryptedNewPin.reserve(pinLen);
+            for (size_t i = 0; i < pinLen; i++) decryptedNewPin += (char)paddedPin[i];
+            memset(paddedPin, 0, sizeof(paddedPin));
+
+            bool changed = createFidoPin(decryptedNewPin);
+            decryptedNewPin = "";
+            if (!changed) {
+                uint8_t err = 0x37;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
             encoder.writeMapHeader(0);
         }
 

@@ -4,6 +4,7 @@
 #include "mbedtls/md.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/ecdh.h"
+#include "mbedtls/aes.h"
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/pk.h"
@@ -218,6 +219,67 @@ void processHandshake(const String &clientPubHex) {
   Serial.println(toHex(exportBuf, exportLen));
 
   mbedtls_ecdh_free(&ctx);
+}
+
+bool fidoEcdhSharedSecret(const uint8_t devicePriv32[32], const uint8_t peerXY64[64], uint8_t sharedOut32[32]) {
+  mbedtls_ecdh_context ctx;
+  mbedtls_ecdh_init(&ctx);
+
+  int ret = mbedtls_ecp_group_load(&ctx.grp, MBEDTLS_ECP_DP_SECP256R1);
+  if (ret != 0) { mbedtls_ecdh_free(&ctx); return false; }
+
+  ret = mbedtls_mpi_read_binary(&ctx.d, devicePriv32, 32);
+  if (ret != 0) { mbedtls_ecdh_free(&ctx); return false; }
+
+  uint8_t peerUncompressed[65];
+  peerUncompressed[0] = 0x04;
+  memcpy(peerUncompressed + 1, peerXY64, 64);
+
+  ret = mbedtls_ecp_point_read_binary(&ctx.grp, &ctx.Qp, peerUncompressed, sizeof(peerUncompressed));
+  if (ret != 0) { mbedtls_ecdh_free(&ctx); return false; }
+
+  ret = mbedtls_ecdh_compute_shared(&ctx.grp, &ctx.z, &ctx.Qp, &ctx.d, hw_rng_callback, NULL);
+  if (ret != 0) { mbedtls_ecdh_free(&ctx); return false; }
+
+  uint8_t rawShared[32];
+  mbedtls_mpi_write_binary(&ctx.z, rawShared, sizeof(rawShared));
+  mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), rawShared, sizeof(rawShared), sharedOut32);
+  memset(rawShared, 0, sizeof(rawShared));
+
+  mbedtls_ecdh_free(&ctx);
+  return true;
+}
+
+bool aesCbcZeroIvEncrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out) {
+  if (len % 16 != 0) return false;
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  if (mbedtls_aes_setkey_enc(&aes, key32, 256) != 0) { mbedtls_aes_free(&aes); return false; }
+  uint8_t iv[16] = {0};
+  int ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, len, iv, in, out);
+  mbedtls_aes_free(&aes);
+  return ret == 0;
+}
+
+bool aesCbcZeroIvDecrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out) {
+  if (len % 16 != 0) return false;
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  if (mbedtls_aes_setkey_dec(&aes, key32, 256) != 0) { mbedtls_aes_free(&aes); return false; }
+  uint8_t iv[16] = {0};
+  int ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, len, iv, in, out);
+  mbedtls_aes_free(&aes);
+  return ret == 0;
+}
+
+void hmacSha256Raw(const uint8_t key32[32], const uint8_t *data, size_t len, uint8_t out32[32]) {
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+  mbedtls_md_hmac_starts(&ctx, key32, 32);
+  mbedtls_md_hmac_update(&ctx, data, len);
+  mbedtls_md_hmac_finish(&ctx, out32);
+  mbedtls_md_free(&ctx);
 }
 
 size_t SecureTerminal::write(uint8_t c) {

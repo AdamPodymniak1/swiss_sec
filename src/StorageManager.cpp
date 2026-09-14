@@ -84,7 +84,10 @@ bool isPinSet() {
     return res;
 }
 
-void createPin(const String &pin) {
+bool createPin(const String &pin) {
+    if (pin.length() < getMinPinLength()) {
+        return false;
+    }
     String hashedPin = hashPin(pin);
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     File file = SPIFFS.open("/pin.txt", "w");
@@ -93,6 +96,7 @@ void createPin(const String &pin) {
         file.close();
     }
     xSemaphoreGive(storageMutex);
+    return true;
 }
 
 int getFailedPinAttempts() {
@@ -1036,53 +1040,36 @@ void secureWipe(String &str) {
 }
 
 bool isFidoPinSet() {
-    xSemaphoreTake(storageMutex, portMAX_DELAY);
-    bool res = SPIFFS.exists("/fido_pin.txt");
-    xSemaphoreGive(storageMutex);
-    return res;
+    return isPinSet();
 }
 
-void createFidoPin(const String &pin) {
-    String hashedPin = hashPin(pin);
-    xSemaphoreTake(storageMutex, portMAX_DELAY);
-    File file = SPIFFS.open("/fido_pin.txt", "w");
-    if (file) {
-        file.print(hashedPin);
-        file.close();
-    }
-    xSemaphoreGive(storageMutex);
+bool createFidoPin(const String &pin) {
+    return createPin(pin);
 }
 
 int getFailedFidoPinAttempts() {
-    xSemaphoreTake(storageMutex, portMAX_DELAY);
-    if (!SPIFFS.exists("/fido_fail.txt")) {
-        xSemaphoreGive(storageMutex);
-        return 0;
-    }
-    File file = SPIFFS.open("/fido_fail.txt", "r");
-    if (!file) {
-        xSemaphoreGive(storageMutex);
-        return 0;
-    }
-    String val = file.readString();
-    file.close();
-    xSemaphoreGive(storageMutex);
-    return val.toInt();
+    return getFailedPinAttempts();
 }
 
 void resetFido2System() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/passwords.json")) SPIFFS.remove("/passwords.json");
     if (SPIFFS.exists("/passkeys.json")) SPIFFS.remove("/passkeys.json");
     if (SPIFFS.exists("/passkeys.bin")) SPIFFS.remove("/passkeys.bin");
     if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
-    if (SPIFFS.exists("/fido_pin.txt")) SPIFFS.remove("/fido_pin.txt");
-    if (SPIFFS.exists("/fido_fail.txt")) SPIFFS.remove("/fido_fail.txt");
+    if (SPIFFS.exists("/totp.json")) SPIFFS.remove("/totp.json");
+    if (SPIFFS.exists("/pin.txt")) SPIFFS.remove("/pin.txt");
+    if (SPIFFS.exists("/failures.txt")) SPIFFS.remove("/failures.txt");
+    if (SPIFFS.exists("/crypto_alg.txt")) SPIFFS.remove("/crypto_alg.txt");
     if (SPIFFS.exists("/fido_uv_fail.txt")) SPIFFS.remove("/fido_uv_fail.txt");
     if (SPIFFS.exists("/fido_force_pin.txt")) SPIFFS.remove("/fido_force_pin.txt");
     if (SPIFFS.exists("/fido_min_pin.txt")) SPIFFS.remove("/fido_min_pin.txt");
     if (SPIFFS.exists("/largeblob.bin")) SPIFFS.remove("/largeblob.bin");
     rotateStatelessMasterSecret();
     xSemaphoreGive(storageMutex);
+    clearStorageKey();
+    authenticated = false;
+    currentCommandState = STATE_READY;
     CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
 }
 
@@ -1572,29 +1559,18 @@ void setMinPinLength(uint8_t length) {
 }
 
 void incrementFailedFidoPinAttempts() {
-    int attempts = getFailedFidoPinAttempts() + 1;
-    xSemaphoreTake(storageMutex, portMAX_DELAY);
-    File file = SPIFFS.open("/fido_fail.txt", "w");
-    if (file) {
-        file.print(attempts);
-        file.close();
-    }
-    xSemaphoreGive(storageMutex);
+    incrementFailedPinAttempts();
 }
 
 void resetFailedFidoPinAttempts() {
-    xSemaphoreTake(storageMutex, portMAX_DELAY);
-    if (SPIFFS.exists("/fido_fail.txt")) {
-        SPIFFS.remove("/fido_fail.txt");
-    }
-    xSemaphoreGive(storageMutex);
+    resetFailedPinAttempts();
 }
 
 bool verifyFidoPinInternal(const String& pin) {
-    if (!isFidoPinSet()) return false;
+    if (!isPinSet()) return false;
     String hashedPin = hashPin(pin);
     xSemaphoreTake(storageMutex, portMAX_DELAY);
-    File file = SPIFFS.open("/fido_pin.txt", "r");
+    File file = SPIFFS.open("/pin.txt", "r");
     String storedHash = "";
     if (file) {
         storedHash = file.readString();
@@ -1602,4 +1578,20 @@ bool verifyFidoPinInternal(const String& pin) {
     }
     xSemaphoreGive(storageMutex);
     return storedHash == hashedPin;
+}
+
+bool verifyFidoPinHashInternal(const uint8_t pinHash16[16]) {
+    if (!isPinSet()) return false;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    File file = SPIFFS.open("/pin.txt", "r");
+    String storedHash = "";
+    if (file) {
+        storedHash = file.readString();
+        file.close();
+    }
+    xSemaphoreGive(storageMutex);
+    if (storedHash.length() < 32) return false;
+    uint8_t storedBytes[16];
+    fromHex(storedHash.substring(0, 32), storedBytes, 16);
+    return memcmp(storedBytes, pinHash16, 16) == 0;
 }
