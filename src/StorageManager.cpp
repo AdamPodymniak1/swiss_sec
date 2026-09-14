@@ -534,10 +534,10 @@ bool isPasskeyExists(const String &credentialIdHex) {
     return found;
 }
 
-bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex) {
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex, const String &credBlobHex) {
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
-    String rawPayload = userIdHex + "\n" + userName + "\n" + privateKeyHex + "\n" + String(credProtect) + "\n" + largeBlobKeyHex;
+    String rawPayload = userIdHex + "\n" + userName + "\n" + privateKeyHex + "\n" + String(credProtect) + "\n" + largeBlobKeyHex + "\n" + credBlobHex;
     String encryptedPayload = encryptStoragePayload(rawPayload, fidoKey);
 
     if (encryptedPayload == "") {
@@ -575,11 +575,15 @@ bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const 
     return true;
 }
 
-bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
-    return savePasskeyRecord(credentialIdHex, rpId, userIdHex, userName, privateKeyHex, algId, 1, "");
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex) {
+    return savePasskeyRecord(credentialIdHex, rpId, userIdHex, userName, privateKeyHex, algId, credProtect, largeBlobKeyHex, "");
 }
 
-bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut) {
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId) {
+    return savePasskeyRecord(credentialIdHex, rpId, userIdHex, userName, privateKeyHex, algId, 1, "", "");
+}
+
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut, String &credBlobHexOut) {
     byte fidoKey[32];
     getFidoHardwareKey(fidoKey);
 
@@ -637,9 +641,11 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &us
 
     int thirdNewline = decryptedPayload.indexOf('\n', secondNewline + 1);
     int fourthNewline = (thirdNewline == -1) ? -1 : decryptedPayload.indexOf('\n', thirdNewline + 1);
+    int fifthNewline = (fourthNewline == -1) ? -1 : decryptedPayload.indexOf('\n', fourthNewline + 1);
 
     credProtectOut = 1;
     largeBlobKeyHexOut = "";
+    credBlobHexOut = "";
 
     if (thirdNewline == -1) {
         privateKeyHexOut = decryptedPayload.substring(secondNewline + 1);
@@ -651,17 +657,28 @@ bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &us
         } else {
             String cp = decryptedPayload.substring(thirdNewline + 1, fourthNewline);
             if (cp.length() > 0) credProtectOut = cp.toInt();
-            largeBlobKeyHexOut = decryptedPayload.substring(fourthNewline + 1);
+            if (fifthNewline == -1) {
+                largeBlobKeyHexOut = decryptedPayload.substring(fourthNewline + 1);
+            } else {
+                largeBlobKeyHexOut = decryptedPayload.substring(fourthNewline + 1, fifthNewline);
+                credBlobHexOut = decryptedPayload.substring(fifthNewline + 1);
+            }
         }
     }
 
     return true;
 }
 
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut) {
+    String dummyCredBlobHex;
+    return getPasskeyRecord(credentialIdHex, rpIdOut, userIdHexOut, userNameOut, privateKeyHexOut, algId, credProtectOut, largeBlobKeyHexOut, dummyCredBlobHex);
+}
+
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId) {
     int dummyCredProtect;
     String dummyLargeBlobKeyHex;
-    return getPasskeyRecord(credentialIdHex, rpIdOut, userIdHexOut, userNameOut, privateKeyHexOut, algId, dummyCredProtect, dummyLargeBlobKeyHex);
+    String dummyCredBlobHex;
+    return getPasskeyRecord(credentialIdHex, rpIdOut, userIdHexOut, userNameOut, privateKeyHexOut, algId, dummyCredProtect, dummyLargeBlobKeyHex, dummyCredBlobHex);
 }
 
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex) {

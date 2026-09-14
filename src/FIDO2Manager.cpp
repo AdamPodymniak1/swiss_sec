@@ -44,12 +44,14 @@ static uint8_t nextAssertionSalt2[32] = {0};
 static size_t nextAssertionSalt1Len = 0;
 static size_t nextAssertionSalt2Len = 0;
 static bool nextAssertionLargeBlobReq = false;
+static bool nextAssertionCredBlobReq = false;
 
 static uint8_t* largeBlobWriteBuffer = nullptr;
 static size_t largeBlobWriteBufferCapacity = 0;
 static size_t largeBlobExpectedTotalLen = 0;
 static size_t largeBlobReceivedLen = 0;
 static const size_t MAX_LARGE_BLOB_ARRAY = 4096;
+static const size_t MAX_CRED_BLOB_LEN = 32;
 static std::vector<String> enumRpList;
 static size_t enumRpIdx = 0;
 static std::vector<String> enumCredList;
@@ -671,7 +673,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
 
-        encoder.writeMapHeader(11);
+        encoder.writeMapHeader(12);
 
         encoder.writeUnsignedInt(1);
         encoder.writeArrayHeader(3);
@@ -680,10 +682,11 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("FIDO_2_1");
 
         encoder.writeUnsignedInt(2);
-        encoder.writeArrayHeader(3);
+        encoder.writeArrayHeader(4);
         encoder.writeTextString("hmac-secret");
         encoder.writeTextString("credProtect");
         encoder.writeTextString("largeBlobKey");
+        encoder.writeTextString("credBlob");
 
         encoder.writeUnsignedInt(3);
         initializeDynamicAaguid();
@@ -750,6 +753,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeUnsignedInt(0x0B);
         encoder.writeUnsignedInt(MAX_LARGE_BLOB_ARRAY);
 
+        encoder.writeUnsignedInt(0x0E);
+        encoder.writeUnsignedInt(MAX_CRED_BLOB_LEN);
+
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         free(responseBuffer);
         return;
@@ -772,6 +778,9 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         int selectedAlgId = defaultCryptoAlg;
         int requestedCredProtect = 1;
         bool largeBlobKeyRequested = false;
+        bool credBlobRequested = false;
+        uint8_t credBlobRaw[MAX_CRED_BLOB_LEN] = {0};
+        size_t credBlobRawLen = 0;
 
         static const size_t MAX_EXCLUDE_CREDENTIALS = 16;
         uint8_t excludeCredentialIds[MAX_EXCLUDE_CREDENTIALS][MAX_CREDENTIAL_ID_LEN];
@@ -891,6 +900,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                     if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
                                         largeBlobKeyRequested = (valVal == 21);
                                     } else { parser.skipValue(); }
+                                }
+
+                                else if (strcmp(extKey, "credBlob") == 0) {
+                                    if (parser.readByteString(credBlobRaw, sizeof(credBlobRaw), credBlobRawLen)) {
+                                        credBlobRequested = true;
+                                    } else {
+                                        credBlobRequested = true;
+                                        credBlobRawLen = 0;
+                                        parser.skipValue();
+                                    }
                                 } else { parser.skipValue(); }
                             } else { parser.skipValue(); }
                         }
@@ -1138,6 +1157,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             memset(rawLargeBlobKey, 0, 32);
         }
 
+        bool credBlobStored = false;
+        String credBlobHex = "";
+        if (credBlobRequested && optionRK && credBlobRawLen > 0 && credBlobRawLen <= MAX_CRED_BLOB_LEN) {
+            credBlobHex = toHex(credBlobRaw, credBlobRawLen);
+            credBlobStored = true;
+        }
+
         if (optionRK) {
             rawCredIdLen = 16;
             for(int i = 0; i < 16; i++) rawCredId[i] = esp_random() & 0xFF;
@@ -1148,7 +1174,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 bool deletedOk = deletePasskeyRecord(existingCredIdHex);
             }
 
-            bool saveOk = savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId, requestedCredProtect, largeBlobKeyHex);
+            bool saveOk = savePasskeyRecord(credentialIdHex, String(targetRpId), userIdHex, String(userName), privateKeyHex, selectedAlgId, requestedCredProtect, largeBlobKeyHex, credBlobHex);
             if (!saveOk) {
                 showDisplayMessage(1, "SAVE FAILED", "", 0);
                 uint8_t err = 0x21;
@@ -1193,7 +1219,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         mbedtls_md_free(&sha_ctx);
 
         uint8_t authDataFlags = 0x45;
-        if (hmacSecretRequested) {
+        if (hmacSecretRequested || credBlobRequested) {
             authDataFlags |= 0x80;
         }
         authData[32] = authDataFlags;
@@ -1261,11 +1287,18 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             authDataOffset += pubKeyLen;
         }
 
-        if (hmacSecretRequested) {
+        if (hmacSecretRequested || credBlobRequested) {
             CborEncoder extEncoder(&finalAuthData[authDataOffset], 8192 - authDataOffset);
-            extEncoder.writeMapHeader(1);
-            extEncoder.writeTextString("hmac-secret");
-            extEncoder.writeBoolean(true);
+            size_t makeCredExtCount = (hmacSecretRequested ? 1 : 0) + (credBlobRequested ? 1 : 0);
+            extEncoder.writeMapHeader(makeCredExtCount);
+            if (hmacSecretRequested) {
+                extEncoder.writeTextString("hmac-secret");
+                extEncoder.writeBoolean(true);
+            }
+            if (credBlobRequested) {
+                extEncoder.writeTextString("credBlob");
+                extEncoder.writeBoolean(credBlobStored);
+            }
             authDataOffset += extEncoder.getOffset();
         }
 
@@ -1364,6 +1397,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         size_t hmacSalt1Len = 0;
         size_t hmacSalt2Len = 0;
         bool largeBlobKeyRequested = false;
+        bool credBlobRequested = false;
 
         static const size_t MAX_ALLOW_CREDENTIALS = 32;
         uint8_t allowCredentialIds[MAX_ALLOW_CREDENTIALS][MAX_CREDENTIAL_ID_LEN] = {0};
@@ -1472,6 +1506,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                                     largeBlobKeyRequested = (valVal == 21);
                                 } else { parser.skipValue(); }
                             }
+                            else if (strcmp(extKey, "credBlob") == 0) {
+                                uint8_t valType; uint64_t valVal;
+                                if (parser.readTypeAndValue(valType, valVal) && valType == 7) {
+                                    credBlobRequested = (valVal == 21);
+                                } else { parser.skipValue(); }
+                            }
                             else {
                                 parser.skipValue();
                             }
@@ -1530,6 +1570,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         int storedAlgId;
         int storedCredProtect = 1;
         String storedLargeBlobKeyHex = "";
+        String storedCredBlobHex = "";
 
         uint8_t binCredId[256];
         size_t binCredLen = credentialIdHex.length() / 2;
@@ -1540,7 +1581,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             storedRpId = String(targetRpId);
             if (storedUserName.length() == 0) storedUserName = "Stateless User";
 
-        } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex)) {
+        } else if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex, storedCredBlobHex)) {
             uint8_t err = 0x2E;
             sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
             free(responseBuffer);
@@ -1562,6 +1603,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         nextAssertionOptionUV = optionUV;
         nextAssertionExtReq = extensionRequested;
         nextAssertionLargeBlobReq = largeBlobKeyRequested;
+        nextAssertionCredBlobReq = credBlobRequested;
 
         if (extensionRequested) {
             memcpy(nextAssertionSalt1, hmacSalt1, 32);
@@ -1724,10 +1766,12 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         bool includeLargeBlobKey = largeBlobKeyRequested && storedLargeBlobKeyHex.length() == 64;
         bool includeUserEntity = storedUserIdHex.length() > 0;
+        bool includeCredBlob = credBlobRequested && storedCredBlobHex.length() > 0;
+        bool hasExtOutput = extensionRequested || includeCredBlob;
 
         size_t mapItems = 3;
         if (includeUserEntity) mapItems++;
-        if (extensionRequested) mapItems++;
+        if (hasExtOutput) mapItems++;
         if (matchedCreds.size() > 1) mapItems++;
         if (includeLargeBlobKey) mapItems++;
         localEncoder.writeMapHeader(mapItems);
@@ -1772,17 +1816,27 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             memset(rawLargeBlobKeyOut, 0, 32);
         }
 
-        if (extensionRequested) {
+        if (hasExtOutput) {
             localEncoder.writeUnsignedInt(0x08);
-            localEncoder.writeMapHeader(1);
-            localEncoder.writeTextString("hmac-secret");
-            if (hmacSalt2Len == 32) {
-                uint8_t combined[64];
-                memcpy(combined, hmacOutput1, 32);
-                memcpy(combined + 32, hmacOutput2, 32);
-                localEncoder.writeByteString(combined, 64);
-            } else {
-                localEncoder.writeByteString(hmacOutput1, 32);
+            size_t gaExtCount = (extensionRequested ? 1 : 0) + (includeCredBlob ? 1 : 0);
+            localEncoder.writeMapHeader(gaExtCount);
+            if (extensionRequested) {
+                localEncoder.writeTextString("hmac-secret");
+                if (hmacSalt2Len == 32) {
+                    uint8_t combined[64];
+                    memcpy(combined, hmacOutput1, 32);
+                    memcpy(combined + 32, hmacOutput2, 32);
+                    localEncoder.writeByteString(combined, 64);
+                } else {
+                    localEncoder.writeByteString(hmacOutput1, 32);
+                }
+            }
+            if (includeCredBlob) {
+                localEncoder.writeTextString("credBlob");
+                uint8_t rawCredBlobOut[MAX_CRED_BLOB_LEN];
+                size_t rawCredBlobOutLen = storedCredBlobHex.length() / 2;
+                fromHex(storedCredBlobHex, rawCredBlobOut, rawCredBlobOutLen);
+                localEncoder.writeByteString(rawCredBlobOut, rawCredBlobOutLen);
             }
         }
 
@@ -2124,6 +2178,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         int storedAlgId;
         int storedCredProtect = 1;
         String storedLargeBlobKeyHex = "";
+        String storedCredBlobHex = "";
 
         uint8_t binCredId[256];
         size_t binCredLen = credentialIdHex.length() / 2;
@@ -2131,7 +2186,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         if (!unwrapStatelessCredential(binCredId, binCredLen, nextAssertionRpId, storedUserIdHex, storedUserName,
                                 storedPrivateKeyHex, storedAlgId)) {
-            if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex)) {
+            if (!getPasskeyRecord(credentialIdHex, storedRpId, storedUserIdHex, storedUserName, storedPrivateKeyHex, storedAlgId, storedCredProtect, storedLargeBlobKeyHex, storedCredBlobHex)) {
                 uint8_t err = 0x2E;
                 sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
                 free(responseBuffer);
@@ -2238,11 +2293,13 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         bool includeLargeBlobKey = nextAssertionLargeBlobReq && storedLargeBlobKeyHex.length() == 64;
         bool includeUserEntity = storedUserIdHex.length() > 0;
+        bool includeCredBlob = nextAssertionCredBlobReq && storedCredBlobHex.length() > 0;
+        bool hasExtOutput = nextAssertionExtReq || includeCredBlob;
 
         CborEncoder localEncoder(&localRespBuf[1], 8191);
         size_t mapItems = 3;
         if (includeUserEntity) mapItems++;
-        if (nextAssertionExtReq) mapItems++;
+        if (hasExtOutput) mapItems++;
         if (includeLargeBlobKey) mapItems++;
         localEncoder.writeMapHeader(mapItems);
 
@@ -2281,17 +2338,27 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             memset(rawLargeBlobKeyOut, 0, 32);
         }
 
-        if (nextAssertionExtReq) {
+        if (hasExtOutput) {
             localEncoder.writeUnsignedInt(0x08);
-            localEncoder.writeMapHeader(1);
-            localEncoder.writeTextString("hmac-secret");
-            if (nextAssertionSalt2Len == 32) {
-                uint8_t combined[64];
-                memcpy(combined, hmacOutput1, 32);
-                memcpy(combined + 32, hmacOutput2, 32);
-                localEncoder.writeByteString(combined, 64);
-            } else {
-                localEncoder.writeByteString(hmacOutput1, 32);
+            size_t gnaExtCount = (nextAssertionExtReq ? 1 : 0) + (includeCredBlob ? 1 : 0);
+            localEncoder.writeMapHeader(gnaExtCount);
+            if (nextAssertionExtReq) {
+                localEncoder.writeTextString("hmac-secret");
+                if (nextAssertionSalt2Len == 32) {
+                    uint8_t combined[64];
+                    memcpy(combined, hmacOutput1, 32);
+                    memcpy(combined + 32, hmacOutput2, 32);
+                    localEncoder.writeByteString(combined, 64);
+                } else {
+                    localEncoder.writeByteString(hmacOutput1, 32);
+                }
+            }
+            if (includeCredBlob) {
+                localEncoder.writeTextString("credBlob");
+                uint8_t rawCredBlobOut[MAX_CRED_BLOB_LEN];
+                size_t rawCredBlobOutLen = storedCredBlobHex.length() / 2;
+                fromHex(storedCredBlobHex, rawCredBlobOut, rawCredBlobOutLen);
+                localEncoder.writeByteString(rawCredBlobOut, rawCredBlobOutLen);
             }
         }
 

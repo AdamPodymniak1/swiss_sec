@@ -4,7 +4,6 @@
 #include <Arduino.h>
 #include <vector>
 
-// Storage APIs are split by PIN vault records, resident passkeys, and TOTP seeds.
 void deriveStorageKey(const String &pin);
 void clearStorageKey();
 
@@ -31,8 +30,10 @@ void clearAllStoredPasswords();
 bool isPasskeyExists(const String &credentialIdHex);
 bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId);
 bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex);
+bool savePasskeyRecord(const String &credentialIdHex, const String &rpId, const String &userIdHex, const String &userName, const String &privateKeyHex, int algId, int credProtect, const String &largeBlobKeyHex, const String &credBlobHex);
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId);
 bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut);
+bool getPasskeyRecord(const String &credentialIdHex, String &rpIdOut, String &userIdHexOut, String &userNameOut, String &privateKeyHexOut, int &algId, int &credProtectOut, String &largeBlobKeyHexOut, String &credBlobHexOut);
 String findCredentialIdByRpAndUser(const String &rpId, const String &userIdHex);
 
 bool getLargeBlobArray(uint8_t **outData, size_t &outLen);
