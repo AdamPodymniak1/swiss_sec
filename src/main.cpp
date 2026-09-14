@@ -304,6 +304,7 @@ void setup() {
 
     showDisplayMessage(1, "BOOTING...", "", 0);
 
+    Serial.setRxBufferSize(4096);
     Serial.begin(115200);
     FidoHID.begin();
 

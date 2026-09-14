@@ -7,6 +7,32 @@
 #include <vector>
 #include "esp_heap_caps.h"
 
+#define DEBUG_UART_BAUD  115200
+
+#if ARDUINO_USB_CDC_ON_BOOT
+  #define DebugLog Serial0
+#else
+  static HardwareSerial DebugLog(0);
+#endif
+static bool debugLogReady = false;
+
+static void initDebugLog() {
+    if (debugLogReady) return;
+    DebugLog.begin(DEBUG_UART_BAUD);
+    debugLogReady = true;
+    DebugLog.println("\n[DBG] FIDO2 debug UART online (Serial0 / UART0 default pins)");
+}
+
+static void fidoLogf(const char* tag, const char* fmt, ...) {
+    if (!debugLogReady) initDebugLog();
+    char msg[192];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    DebugLog.printf("[%10lu][%s] %s\n", (unsigned long)millis(), tag, msg);
+}
+
 static std::vector<String> nextAssertionCreds;
 static size_t nextAssertionIdx = 0;
 static uint8_t nextAssertionClientHash[32] = {0};
@@ -144,6 +170,7 @@ void savePersistedSignCount(uint32_t count) {
 
 bool fidoVerifyFingerprint() {
     if (getFailedUvAttempts() >= 5) {
+        fidoLogf("UV", "BLOCKED: failedUvAttempts=%d >= 5", getFailedUvAttempts());
         showDisplayMessage(1, "UV BLOCKED", "", 2000);
         return false;
     }
@@ -151,6 +178,7 @@ bool fidoVerifyFingerprint() {
 #if USE_FINGERPRINT_SIMULATOR
     if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
         while(digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(10 / portTICK_PERIOD_MS); }
+        fidoLogf("UV", "simulator button press -> OK");
         resetFailedUvAttempts();
         return true;
     }
@@ -164,31 +192,34 @@ bool fidoVerifyFingerprint() {
     }
     if (img == FINGERPRINT_NOFINGER) {
         xSemaphoreGive(fingerprintMutex);
+        fidoLogf("UV", "getImage() -> NOFINGER (no touch yet)");
         return false;
     }
     if (img != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
+        fidoLogf("UV", "getImage() -> error code %d", img);
         return false;
     }
     if (finger.image2Tz() != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
+        fidoLogf("UV", "image2Tz() FAILED -> incrementFailedUvAttempts (now %d)", getFailedUvAttempts() + 1);
         incrementFailedUvAttempts();
         return false;
     }
     uint8_t searchResult = finger.fingerSearch();
     if (searchResult != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
+        fidoLogf("UV", "fingerSearch() FAILED (code %d) -> incrementFailedUvAttempts (now %d)", searchResult, getFailedUvAttempts() + 1);
         incrementFailedUvAttempts();
         return false;
     }
-    if (finger.confidence == lastConfidenceScore && finger.confidence > 0) {
-        xSemaphoreGive(fingerprintMutex);
-        incrementFailedUvAttempts();
-        return false;
-    }
+
+    fidoLogf("UV", "match OK: confidence=%u lastConfidenceScore=%u", finger.confidence, lastConfidenceScore);
     lastConfidenceScore = finger.confidence;
     bool result = finger.confidence > 50;
     xSemaphoreGive(fingerprintMutex);
+
+    fidoLogf("UV", "result=%s (confidence=%u threshold=50)", result ? "PASS" : "FAIL", finger.confidence);
 
     if (result) {
         resetFailedUvAttempts();
@@ -223,8 +254,11 @@ FIDO2HIDDevice::FIDO2HIDDevice() {
 }
 
 void FIDO2HIDDevice::begin() {
+    initDebugLog();
+    fidoLogf("SYS", "FIDO2HIDDevice::begin()");
     initializeDynamicAaguid();
     initFidoAttestation();
+    fidoLogf("SYS", "attestationProvisioned=%d chainLen=%u", (int)isBatchAttestationAvailable(), (unsigned)attestationChainCacheLen);
     hid.begin();
 }
 
@@ -291,6 +325,7 @@ void FIDO2HIDDevice::sendCtapResponse(uint32_t channel, uint8_t cmd, const uint8
 
 void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t len) {
     if (len < 4) {
+        fidoLogf("U2F", "REJECT: len=%u < 4", len);
         uint8_t err[] = {0x67, 0x00};
         sendCtapResponse(channel, CTAPHID_MSG, err, 2);
         return;
@@ -298,14 +333,17 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
 
     uint8_t ins = data[1];
     uint8_t p1 = data[2];
+    fidoLogf("U2F", "IN ch=0x%08X ins=0x%02X p1=0x%02X len=%u", channel, ins, p1, len);
 
     if (ins == 0x03) {
+        fidoLogf("U2F", "VERSION -> U2F_V2");
         uint8_t resp[] = {'U', '2', 'F', '_', 'V', '2', 0x90, 0x00};
         sendCtapResponse(channel, CTAPHID_MSG, resp, 8);
         return;
     }
 
     if (len < 7) {
+        fidoLogf("U2F", "REJECT: len=%u < 7 (no APDU header)", len);
         uint8_t err[] = {0x67, 0x00};
         sendCtapResponse(channel, CTAPHID_MSG, err, 2);
         return;
@@ -313,9 +351,22 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
 
     uint16_t reqLen = (data[5] << 8) | data[6];
     uint8_t* payload = &data[7];
+    fidoLogf("U2F", "reqLen(Lc)=%u framedLen=%u", reqLen, len);
 
     if (ins == 0x01) {
-        if (reqLen != 64 || !fidoVerifyFingerprint()) {
+        fidoLogf("REG", "U2F_REGISTER begin, reqLen=%u (need 64)", reqLen);
+
+        if (reqLen != 64) {
+            fidoLogf("REG", "REJECT 0x6700: reqLen(%u) != 64", reqLen);
+            uint8_t err[] = {0x67, 0x00};
+            sendCtapResponse(channel, CTAPHID_MSG, err, 2);
+            return;
+        }
+
+        bool uvOk = fidoVerifyFingerprint();
+        fidoLogf("REG", "fidoVerifyFingerprint() -> %s", uvOk ? "OK" : "FAIL");
+        if (!uvOk) {
+            fidoLogf("REG", "REJECT 0x6985 SW_CONDITIONS_NOT_SATISFIED (waiting for touch / UV failed)");
             uint8_t err[] = {0x69, 0x85};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
             return;
@@ -326,12 +377,15 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         uint8_t privKey[32];
         uint8_t pubKey[65];
         if (!generateKeypairP256(privKey, pubKey)) {
+            fidoLogf("REG", "REJECT 0x6F00: generateKeypairP256() failed");
             uint8_t err[] = {0x6F, 0x00};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
             return;
         }
+        fidoLogf("REG", "keypair generated OK (pub[0]=0x%02X)", pubKey[0]);
 
         if (!isBatchAttestationAvailable()) {
+            fidoLogf("REG", "REJECT 0x6F00: no batch attestation identity provisioned");
             memset(privKey, 0, sizeof(privKey));
             uint8_t err[] = {0x6F, 0x00};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
@@ -343,11 +397,18 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         String khHex = toHex(kh, 16);
         String appIdHex = toHex(payload + 32, 32);
         String privHex = toHex(privKey, 32);
+        fidoLogf("REG", "keyHandle=%s appIdHash=%s", khHex.c_str(), appIdHex.c_str());
 
-        savePasskeyRecord(khHex, appIdHex, "", "", privHex, -7);
-
-        memset(privKey, 0, sizeof(privKey));
-        secureWipe(privHex);
+        bool saved = savePasskeyRecord(khHex, appIdHex, "", "", privHex, -7);
+        fidoLogf("REG", "savePasskeyRecord() -> %s", saved ? "OK" : "FAIL");
+        if (!saved) {
+            fidoLogf("REG", "REJECT 0x6F00: savePasskeyRecord() failed, refusing to attest an unpersisted credential");
+            memset(privKey, 0, sizeof(privKey));
+            secureWipe(privHex);
+            uint8_t err[] = {0x6F, 0x00};
+            sendCtapResponse(channel, CTAPHID_MSG, err, 2);
+            return;
+        }
 
         uint8_t sigData[150];
         sigData[0] = 0x00;
@@ -356,28 +417,32 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         memcpy(sigData + 65, kh, 16);
         memcpy(sigData + 81, pubKey, 65);
 
-        uint8_t* sig = nullptr;
-        size_t sigLen = 0;
-        bool signOk = generateAlgSignature(-7, toHex(attestationPrivKeyCache, 32), sigData, 146, &sig, &sigLen);
-
-        if (!signOk) {
-            uint8_t err[] = {0x6F, 0x00};
-            sendCtapResponse(channel, CTAPHID_MSG, err, 2);
-            return;
-        }
-
         const uint8_t* leafCert = nullptr;
         size_t leafCertLen = 0;
-        if (!getLeafAttestationCert(&leafCert, &leafCertLen)) {
+        bool useBasicAttestation = isBatchAttestationAvailable() && getLeafAttestationCert(&leafCert, &leafCertLen);
+        fidoLogf("REG", "useBasicAttestation=%d leafCertLen=%u", (int)useBasicAttestation, (unsigned)leafCertLen);
+
+        String signingKeyHex = useBasicAttestation ? toHex(attestationPrivKeyCache, 32) : privHex;
+
+        uint8_t* sig = nullptr;
+        size_t sigLen = 0;
+        bool signOk = generateAlgSignature(-7, signingKeyHex, sigData, 146, &sig, &sigLen);
+        fidoLogf("REG", "generateAlgSignature() -> %s sigLen=%u", signOk ? "OK" : "FAIL", (unsigned)sigLen);
+
+        memset(privKey, 0, sizeof(privKey));
+        secureWipe(privHex);
+
+        if (!signOk) {
+            fidoLogf("REG", "REJECT 0x6F00: signing failed");
             uint8_t err[] = {0x6F, 0x00};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
-            free(sig);
             return;
         }
 
         size_t respLen = 1 + 65 + 1 + 16 + leafCertLen + sigLen + 2;
         uint8_t* resp = (uint8_t*)malloc(respLen);
         if (!resp) {
+            fidoLogf("REG", "REJECT 0x6F00: malloc(%u) failed for response", (unsigned)respLen);
             uint8_t err[] = {0x6F, 0x00};
             sendCtapResponse(channel, CTAPHID_MSG, err, 2);
             free(sig);
@@ -394,6 +459,7 @@ void FIDO2HIDDevice::processU2fCommand(uint32_t channel, uint8_t* data, uint16_t
         resp[off++] = 0x90;
         resp[off++] = 0x00;
 
+        fidoLogf("REG", "SUCCESS 0x9000, respLen=%u", (unsigned)off);
         sendCtapResponse(channel, CTAPHID_MSG, resp, off);
         free(sig);
         free(resp);
@@ -1176,10 +1242,18 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         free(finalAuthData);
 
+        const uint8_t* attLeafCert = nullptr;
+        size_t attLeafCertLen = 0;
+        bool useBasicAttestation = isBatchAttestationAvailable() &&
+                                    getLeafAttestationCert(&attLeafCert, &attLeafCertLen);
+
+        int attSigAlg = useBasicAttestation ? -7 : selectedAlgId;
+        String attSigningKeyHex = useBasicAttestation ? toHex(attestationPrivKeyCache, 32) : privateKeyHex;
+
         struct AsyncSign {
             int alg; String pk; uint8_t* msg; size_t mLen;
             uint8_t** sig; size_t* sLen; volatile bool done; bool res;
-        } sCtx = {selectedAlgId, privateKeyHex, rawMsg, rawMsgLen, &attestationSig, &attestationSigLen, false, false};
+        } sCtx = {attSigAlg, attSigningKeyHex, rawMsg, rawMsgLen, &attestationSig, &attestationSigLen, false, false};
 
         BaseType_t signTaskRc = xTaskCreatePinnedToCore([](void* p){
             AsyncSign* c = (AsyncSign*)p;
@@ -1200,6 +1274,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
         bool sigSuccess = sCtx.res;
         free(rawMsg);
+        secureWipe(attSigningKeyHex);
 
         if (!sigSuccess) {
             uint8_t err = 0x01;
@@ -1209,11 +1284,16 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         }
 
         encoder.writeUnsignedInt(3);
-        encoder.writeMapHeader(2);
+        encoder.writeMapHeader(useBasicAttestation ? 3 : 2);
         encoder.writeTextString("alg");
-        encoder.writeNegativeInt(selectedAlgId);
+        encoder.writeNegativeInt(attSigAlg);
         encoder.writeTextString("sig");
         encoder.writeByteString(attestationSig, attestationSigLen);
+        if (useBasicAttestation) {
+            encoder.writeTextString("x5c");
+            encoder.writeArrayHeader(1);
+            encoder.writeByteString(attLeafCert, attLeafCertLen);
+        }
 
         free(attestationSig);
 
