@@ -2659,11 +2659,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             enumCredList.clear();
             enumCredIdx = 0;
 
+            bool rpHasProtectedCred = false;
+
             std::vector<String> allCreds = getAllStoredCredentialIds();
             for (const String &credHex : allCreds) {
                 String rpId, userIdHex, userName, privKeyHex;
                 int algId;
-                if (getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId)) {
+                int credProtectLevel = 1;
+                String largeBlobKeyHex;
+                if (getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId, credProtectLevel, largeBlobKeyHex)) {
                     uint8_t rpHash[32];
                     mbedtls_md_context_t sha_ctx;
                     mbedtls_md_init(&sha_ctx);
@@ -2675,6 +2679,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
                     if (constantTimeEquals(rpHash, targetRpIdHash, 32)) {
                         enumCredList.push_back(credHex);
+                        if (credProtectLevel >= 2) rpHasProtectedCred = true;
                     }
                 }
             }
@@ -2686,10 +2691,105 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
                 return;
             }
 
+            if (rpHasProtectedCred) {
+                bool biometricVerified = (lastFingerprintSuccessTime > 0 &&
+                                           millis() - lastFingerprintSuccessTime < 5000);
+
+                if (!biometricVerified) {
+                    showDisplayMessage(1, "VERIFY FINGER", "", 0);
+
+                    bool biometricCanceled = false;
+                    unsigned long authStart = millis();
+                    unsigned long lastKeepAlive = 0;
+
+                    while (millis() - authStart < 15000) {
+                        if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                            hasPendingCommand = false;
+                            biometricCanceled = true;
+                            break;
+                        }
+
+                        if (millis() - lastKeepAlive > 500) {
+                            uint8_t status = 0x02;
+                            sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                            lastKeepAlive = millis();
+                        }
+                        if (fidoVerifyFingerprint()) {
+                            biometricVerified = true;
+                            lastFingerprintSuccessTime = millis();
+                            break;
+                        }
+                        delay(50);
+                    }
+
+                    if (biometricCanceled) {
+                        showDisplayMessage(1, "CANCELLED", "", 0);
+                        uint8_t err = 0x2D;
+                        sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                        free(responseBuffer);
+                        return;
+                    }
+                }
+
+                if (!biometricVerified) {
+                    uint8_t err = 0x34;
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+            }
+
             String credHex = enumCredList[enumCredIdx++];
             String rpId, userIdHex, userName, privKeyHex;
             int algId;
-            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId);
+            int credProtectLevel = 1;
+            String largeBlobKeyHex;
+            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId, credProtectLevel, largeBlobKeyHex);
+
+            uint8_t binCredId[64];
+            size_t credLen = credHex.length() / 2;
+            fromHex(credHex, binCredId, credLen);
+
+            uint8_t binUserId[64];
+            size_t userLen = userIdHex.length() / 2;
+            fromHex(userIdHex, binUserId, userLen);
+
+            encoder.writeMapHeader(4);
+            encoder.writeUnsignedInt(0x06);
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id");
+            encoder.writeByteString(binUserId, userLen);
+            encoder.writeTextString("name");
+            encoder.writeTextString(userName.c_str());
+
+            encoder.writeUnsignedInt(0x07);
+            encoder.writeMapHeader(2);
+            encoder.writeTextString("id");
+            encoder.writeByteString(binCredId, credLen);
+            encoder.writeTextString("type");
+            encoder.writeTextString("public-key");
+
+            encoder.writeUnsignedInt(0x09);
+            encoder.writeUnsignedInt(enumCredList.size());
+
+            encoder.writeUnsignedInt(0x0A);
+            encoder.writeUnsignedInt(credProtectLevel);
+        }
+
+        else if (subCommand == 0x05) {
+            if (enumCredIdx >= enumCredList.size()) {
+                uint8_t err = 0x2E;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            String credHex = enumCredList[enumCredIdx++];
+            String rpId, userIdHex, userName, privKeyHex;
+            int algId;
+            int credProtectLevel = 1;
+            String largeBlobKeyHex;
+            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId, credProtectLevel, largeBlobKeyHex);
 
             uint8_t binCredId[64];
             size_t credLen = credHex.length() / 2;
@@ -2714,45 +2814,8 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
             encoder.writeTextString("type");
             encoder.writeTextString("public-key");
 
-            encoder.writeUnsignedInt(0x09);
-            encoder.writeUnsignedInt(enumCredList.size());
-        }
-
-        else if (subCommand == 0x05) {
-            if (enumCredIdx >= enumCredList.size()) {
-                uint8_t err = 0x2E;
-                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
-                free(responseBuffer);
-                return;
-            }
-
-            String credHex = enumCredList[enumCredIdx++];
-            String rpId, userIdHex, userName, privKeyHex;
-            int algId;
-            getPasskeyRecord(credHex, rpId, userIdHex, userName, privKeyHex, algId);
-
-            uint8_t binCredId[64];
-            size_t credLen = credHex.length() / 2;
-            fromHex(credHex, binCredId, credLen);
-
-            uint8_t binUserId[64];
-            size_t userLen = userIdHex.length() / 2;
-            fromHex(userIdHex, binUserId, userLen);
-
-            encoder.writeMapHeader(2);
-            encoder.writeUnsignedInt(0x06);
-            encoder.writeMapHeader(2);
-            encoder.writeTextString("id");
-            encoder.writeByteString(binUserId, userLen);
-            encoder.writeTextString("name");
-            encoder.writeTextString(userName.c_str());
-
-            encoder.writeUnsignedInt(0x07);
-            encoder.writeMapHeader(2);
-            encoder.writeTextString("id");
-            encoder.writeByteString(binCredId, credLen);
-            encoder.writeTextString("type");
-            encoder.writeTextString("public-key");
+            encoder.writeUnsignedInt(0x0A);
+            encoder.writeUnsignedInt(credProtectLevel);
         }
 
         else if (subCommand == 0x06) {
