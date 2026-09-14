@@ -139,6 +139,7 @@ function processIncomingLine(text) {
         } else if (jsonMsg.type === "error") {
             if (jsonMsg.error_code === "PIN_REQ") setAuthState("PIN_REQ");
             else if (jsonMsg.error_code === "NEW_PIN_REQ") setAuthState("NEW_PIN_REQ");
+            else if (jsonMsg.error_code === "BAD_PIN_ATTEMPT") terminal.innerText += "Wrong PIN\n";
             else if (jsonMsg.error_code === "NOT_FOUND") {
                 if (pendingGetPassword) {
                     terminal.innerText += `[System] Password not found.\n`;

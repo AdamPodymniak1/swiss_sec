@@ -430,7 +430,20 @@ chrome.runtime.onMessage.addListener((message) => {
                 document.getElementById('btnListTotp').click();
             }
         } else if (json.type === "error") {
-            showMsg("Error: " + json.error_code, "orange");
+            if (json.error_code === "BAD_PIN_ATTEMPT") {
+                let pinErr = document.getElementById("pinErr");
+                if (!pinErr) {
+                    pinErr = document.createElement("div");
+                    pinErr.id = "pinErr";
+                    pinErr.style.color = "orange";
+                    pinErr.style.marginBottom = "8px";
+                    authSection.insertBefore(pinErr, pinInput);
+                }
+                pinErr.innerText = "Wrong PIN - " + json.message;
+                setTimeout(() => { if (pinErr) pinErr.innerText = ""; }, 3500);
+            } else {
+                showMsg("Error: " + json.error_code, "orange");
+            }
         }
     }
 });
