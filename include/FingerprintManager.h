@@ -10,3 +10,4 @@ extern Adafruit_Fingerprint finger;
 void initFingerprintSensor();
 bool enrollFingerprint(uint8_t id);
 void updateFingerprintAsync();
+void deleteAllFingerprints();

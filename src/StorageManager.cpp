@@ -1,6 +1,7 @@
 #include "StorageManager.h"
 #include "CryptoManager.h"
 #include "CommsManager.h"
+#include "FingerprintManager.h"
 #include "SPIFFS.h"
 #include <ArduinoJson.h>
 #include "Globals.h"
@@ -146,7 +147,13 @@ void factoryResetSystem() {
     SPIFFS.remove("/failures.txt");
     SPIFFS.remove("/crypto_alg.txt");
     SPIFFS.remove("/largeblob.bin");
+    SPIFFS.remove("/fido_uv_fail.txt");
+    SPIFFS.remove("/fido_force_pin.txt");
+    SPIFFS.remove("/fido_min_pin.txt");
+    SPIFFS.remove("/bio_templates.json");
     xSemaphoreGive(storageMutex);
+
+    deleteAllFingerprints();
 }
 
 bool getLargeBlobArray(uint8_t** outData, size_t &outLen) {
@@ -1208,23 +1215,28 @@ int getFailedFidoPinAttempts() {
 
 void resetFido2System() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
-    if (SPIFFS.exists("/passwords.json")) SPIFFS.remove("/passwords.json");
-    if (SPIFFS.exists("/passkeys.json")) SPIFFS.remove("/passkeys.json");
-    if (SPIFFS.exists("/passkeys.bin")) SPIFFS.remove("/passkeys.bin");
-    if (SPIFFS.exists("/passkeys.tmp")) SPIFFS.remove("/passkeys.tmp");
-    if (SPIFFS.exists("/totp.json")) SPIFFS.remove("/totp.json");
-    if (SPIFFS.exists("/pin.txt")) SPIFFS.remove("/pin.txt");
-    if (SPIFFS.exists("/failures.txt")) SPIFFS.remove("/failures.txt");
-    if (SPIFFS.exists("/crypto_alg.txt")) SPIFFS.remove("/crypto_alg.txt");
-    if (SPIFFS.exists("/fido_uv_fail.txt")) SPIFFS.remove("/fido_uv_fail.txt");
-    if (SPIFFS.exists("/fido_force_pin.txt")) SPIFFS.remove("/fido_force_pin.txt");
-    if (SPIFFS.exists("/fido_min_pin.txt")) SPIFFS.remove("/fido_min_pin.txt");
-    if (SPIFFS.exists("/largeblob.bin")) SPIFFS.remove("/largeblob.bin");
+    SPIFFS.remove("/passwords.json");
+    SPIFFS.remove("/passkeys.json");
+    SPIFFS.remove("/passkeys.bin");
+    SPIFFS.remove("/passkeys.tmp");
+    SPIFFS.remove("/totp.json");
+    SPIFFS.remove("/pin.txt");
+    SPIFFS.remove("/failures.txt");
+    SPIFFS.remove("/crypto_alg.txt");
+    SPIFFS.remove("/fido_uv_fail.txt");
+    SPIFFS.remove("/fido_force_pin.txt");
+    SPIFFS.remove("/fido_min_pin.txt");
+    SPIFFS.remove("/largeblob.bin");
+    SPIFFS.remove("/bio_templates.json");
     rotateStatelessMasterSecret();
     xSemaphoreGive(storageMutex);
+    
     clearStorageKey();
     authenticated = false;
     currentCommandState = STATE_READY;
+    
+    deleteAllFingerprints();
+    
     CommsManager::sendEvent("FIDO2", "RESET_COMPLETE");
 }
 

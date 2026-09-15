@@ -232,3 +232,11 @@ void updateFingerprintAsync() {
     }
 #endif
 }
+
+void deleteAllFingerprints() {
+#if !USE_FINGERPRINT_SIMULATOR
+    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+    finger.emptyDatabase();
+    xSemaphoreGive(fingerprintMutex);
+#endif
+}
