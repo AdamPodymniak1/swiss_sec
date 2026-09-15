@@ -745,6 +745,8 @@ size_t getBinaryCredentialId(const String &rpId, const String &userIdHex, uint8_
     return binIdLen;
 }
 
+static const size_t MAX_DISCOVERABLE_CREDENTIALS = 1000;
+
 void listFidoWebsites() {
     xSemaphoreTake(storageMutex, portMAX_DELAY);
     File file = SPIFFS.open("/passkeys.bin", "r");
@@ -752,11 +754,14 @@ void listFidoWebsites() {
         xSemaphoreGive(storageMutex);
         JsonDocument data;
         data["websites"].to<JsonArray>();
+        data["discoverable_credentials_used"] = 0;
+        data["discoverable_credentials_remaining"] = MAX_DISCOVERABLE_CREDENTIALS;
         CommsManager::sendEvent("FIDO2", "LIST", &data);
         return;
     }
 
     std::vector<String> rpIds;
+    size_t credentialCount = 0;
     while (file.available()) {
         uint8_t status;
         if (file.read(&status, 1) != 1) break;
@@ -772,6 +777,7 @@ void listFidoWebsites() {
         file.seek(len, SeekCur);
 
         if (status == 1) {
+            credentialCount++;
             bool exists = false;
             for (const String &s : rpIds) {
                 if (s == rp) { exists = true; break; }
@@ -787,6 +793,12 @@ void listFidoWebsites() {
     for (const String &rp : rpIds) {
         websitesArray.add(rp);
     }
+
+    size_t remaining = (credentialCount >= MAX_DISCOVERABLE_CREDENTIALS)
+                            ? 0
+                            : (MAX_DISCOVERABLE_CREDENTIALS - credentialCount);
+    responseData["discoverable_credentials_used"] = credentialCount;
+    responseData["discoverable_credentials_remaining"] = remaining;
 
     CommsManager::sendEvent("FIDO2", "LIST", &responseData);
 }

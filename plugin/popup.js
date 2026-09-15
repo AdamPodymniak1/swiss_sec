@@ -37,7 +37,6 @@ document.querySelectorAll('.tab-btn').forEach(button => {
 
 document.getElementById('btnRegFinger').onclick = () => {
     showMsg("Place finger on sensor...", "orange");
-    // Hardcoding ID 1 as defined in your table. You can later add a UI input for this if needed.
     chrome.runtime.sendMessage({ target: "dashboard", type: "SEND", payload: { cmd: "ENROLL_FINGER", id: 1 } });
 };
 
@@ -127,6 +126,20 @@ function renderStats(total, used, free, usage, passCount, passkeyCount = 0) {
             <div><strong>Passkeys:</strong> ${passkeyCount}</div>
         </div>
     `;
+}
+
+function renderFidoCapacity(used, remaining) {
+    const el = document.getElementById('fidoCapacity');
+    if (!el) return;
+
+    if (used === undefined || remaining === undefined) {
+        el.innerText = "";
+        return;
+    }
+
+    const total = used + remaining;
+    el.innerText = `Discoverable credentials: ${used} used / ${remaining} free (of ${total})`;
+    el.style.color = remaining <= 0 ? "#ff4444" : (remaining <= 10 ? "#ff8800" : "#888");
 }
 
 function renderList(elementId, itemsArray, type) {
@@ -245,13 +258,11 @@ function updateTotpTimers() {
         const currentStep = Math.floor(now / 30000);
         const ratio = remainingMs / 30000;
 
-        // Ultra-smooth GPU scale transformation
         document.querySelectorAll('.totp-timer-fill').forEach(bar => {
             bar.style.transform = `scaleX(${ratio})`;
             bar.style.backgroundColor = remainingSec <= 5 ? '#ff4444' : '#00ffff';
         });
 
-        // Trigger automatic key rotation on period expiration
         if (lastRefreshedEpochStep !== -1 && lastRefreshedEpochStep !== currentStep) {
             lastRefreshedEpochStep = currentStep;
             document.getElementById('btnListTotp').click();
@@ -261,7 +272,6 @@ function updateTotpTimers() {
     totpAnimationFrameId = requestAnimationFrame(updateTotpTimers);
 }
 
-// Start frame-rate synced animation loop
 if (totpAnimationFrameId) cancelAnimationFrame(totpAnimationFrameId);
 requestAnimationFrame(updateTotpTimers);
 
@@ -309,6 +319,7 @@ document.getElementById('btnListPass').onclick = () => {
 
 document.getElementById('btnListFido').onclick = () => {
     document.getElementById('fidoVisual').innerHTML = '<div class="empty-state">Syncing...</div>';
+    document.getElementById('fidoCapacity').innerText = "";
     chrome.runtime.sendMessage({ target: "dashboard", type: "CMD_LIST_FIDO" });
 };
 
@@ -389,6 +400,7 @@ chrome.runtime.onMessage.addListener((message) => {
                 renderList('passVisual', json.data.items || [], 'pass');
             } else if (json.module === "FIDO2" && json.event === "LIST" && json.data) {
                 renderList('fidoVisual', json.data.websites || [], 'fido');
+                renderFidoCapacity(json.data.discoverable_credentials_used, json.data.discoverable_credentials_remaining);
             } else if (json.module === "TOTP" && json.event === "CODES" && json.data) {
                 renderTotpList(json.data.codes || {});
             } else if (json.module === "SYS" && json.event === "SETTINGS_UPDATED") {
