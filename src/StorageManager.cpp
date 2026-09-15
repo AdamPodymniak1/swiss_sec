@@ -1061,6 +1061,132 @@ bool deleteTotpSecret(const String &name) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Fingerprint (bio enrollment) template metadata storage.
+//
+// The sensor itself is the source of truth for the biometric templates
+// (image data never leaves it); this just tracks which numeric sensor
+// slots are in use and the human-friendly name assigned to each one, so
+// authenticatorBioEnrollment (CTAP2 command 0x09) can enumerate/rename/
+// remove enrollments the way platforms (e.g. Windows Hello) expect.
+// ---------------------------------------------------------------------------
+static const uint8_t MAX_BIO_TEMPLATES = 127;
+
+std::vector<uint8_t> getAllBioTemplateIds() {
+    std::vector<uint8_t> ids;
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/bio_templates.json")) {
+        File file = SPIFFS.open("/bio_templates.json", "r");
+        if (file) {
+            JsonDocument doc;
+            if (deserializeJson(doc, file) == DeserializationError::Ok) {
+                JsonObject obj = doc.as<JsonObject>();
+                for (JsonPair pair : obj) {
+                    ids.push_back((uint8_t)atoi(pair.key().c_str()));
+                }
+            }
+            file.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+    return ids;
+}
+
+int getBioTemplateCount() {
+    return (int)getAllBioTemplateIds().size();
+}
+
+uint8_t findFreeBioTemplateSlot() {
+    std::vector<uint8_t> used = getAllBioTemplateIds();
+    for (uint8_t id = 1; id < MAX_BIO_TEMPLATES; id++) {
+        bool taken = false;
+        for (uint8_t u : used) {
+            if (u == id) { taken = true; break; }
+        }
+        if (!taken) return id;
+    }
+    return 0; // 0 = no free slot available
+}
+
+bool saveBioTemplateName(uint8_t templateId, const String &friendlyName) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+
+    JsonDocument doc;
+    if (SPIFFS.exists("/bio_templates.json")) {
+        File file = SPIFFS.open("/bio_templates.json", "r");
+        if (file) {
+            deserializeJson(doc, file);
+            file.close();
+        }
+    }
+
+    doc[String(templateId)] = friendlyName;
+
+    File file = SPIFFS.open("/bio_templates.json", "w");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    serializeJson(doc, file);
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return true;
+}
+
+String getBioTemplateName(uint8_t templateId) {
+    String result = "";
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/bio_templates.json")) {
+        File file = SPIFFS.open("/bio_templates.json", "r");
+        if (file) {
+            JsonDocument doc;
+            if (deserializeJson(doc, file) == DeserializationError::Ok) {
+                String key = String(templateId);
+                if (doc[key].is<JsonVariant>()) {
+                    result = doc[key].as<String>();
+                }
+            }
+            file.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+    return result;
+}
+
+bool deleteBioTemplateRecord(uint8_t templateId) {
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (!SPIFFS.exists("/bio_templates.json")) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+
+    File file = SPIFFS.open("/bio_templates.json", "r");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+
+    String key = String(templateId);
+    if (!doc[key].is<JsonVariant>()) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    doc.remove(key);
+
+    file = SPIFFS.open("/bio_templates.json", "w");
+    if (!file) {
+        xSemaphoreGive(storageMutex);
+        return false;
+    }
+    serializeJson(doc, file);
+    file.close();
+    xSemaphoreGive(storageMutex);
+    return true;
+}
+
 void secureWipe(String &str) {
     if (str.length() > 0) {
         memset(const_cast<char*>(str.c_str()), 0, str.length());

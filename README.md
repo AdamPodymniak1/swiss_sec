@@ -269,21 +269,21 @@ For units that will actually ship, generate a real batch key/cert offline (ideal
 * [x] **Parser Hardening:** Conduct fuzz testing and defensive hardening for CBOR and WebAuthn packet parsing pipelines against malformed inputs.
 * [x] **Credential Health Audit:** Implement security auditing for `/passwords.json` to flag weak, reused, or compromised passwords.
 
-## Pending Roadmap & Future Tasks
-
 ### Hardware & Protocol Expansion
 * [x] **Device Detection:** Implement automatic detection routines to verify when the ESP32-S3 is plugged in for browser plugin communication.
 * [x] **Connection Broadcasting:** Broadcast FIDO2 connection status messages when requested by web applications.
-* [ ] **Advanced CTAP2 Commands:**
+* [x] **Advanced CTAP2 Commands:**
   * [x] Client PIN (Command `0x06`)
   * [x] GetNextAssertion (Command `0x08`)
   * [x] Authenticator Reset (Command `0x07`)
   * [x] Credential Management API (Command `0x0A`)
-  * [ ] Bio Enrollment (Command `0x09`)
+  * [x] Bio Enrollment (Command `0x09`)
   * [x] Stateless Credentials (Non-Resident Keys support)
 * [x] **CTAP 2.1 Extensions:** Implement support for modern extensions including `largeBlob`, `credProtect`, credBlob, and`alwaysUv`.
 * [x] **PQC Protocol Alignment:** Align the existing ML-DSA implementation (`algId == -48`) with finalized FIDO Alliance Post-Quantum Cryptography drafts.
 * [x] **X.509 certificate:** Save a verifiable X.509 batch certificate chain to NVS. Added to `.gitignore` and documented below under [FIDO2 Attestation Certificate Provisioning](#fido2-attestation-certificate-provisioning).
+
+## Pending Roadmap & Future Tasks
 
 ### Backup, Recovery, & Others
 * [ ] **Encrypted Backup Solutions:** Architect a secure, user-controlled export/import mechanism for offline backup and recovery.

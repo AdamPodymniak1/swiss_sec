@@ -74,6 +74,12 @@ bool fidoEcdhSharedSecret(const uint8_t devicePriv32[32], const uint8_t peerXY64
 bool aesCbcZeroIvEncrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out);
 bool aesCbcZeroIvDecrypt(const uint8_t key32[32], const uint8_t *in, size_t len, uint8_t *out);
 void hmacSha256Raw(const uint8_t key32[32], const uint8_t *data, size_t len, uint8_t out32[32]);
+std::vector<uint8_t> getAllBioTemplateIds();
+int getBioTemplateCount();
+uint8_t findFreeBioTemplateSlot();
+bool saveBioTemplateName(uint8_t templateId, const String &friendlyName);
+String getBioTemplateName(uint8_t templateId);
+bool deleteBioTemplateRecord(uint8_t templateId);
 
 static uint8_t attestationChainCache[2048];
 static size_t attestationChainCacheLen = 0;
@@ -693,7 +699,7 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeByteString(dynamicAaguid, 16);
 
         encoder.writeUnsignedInt(4);
-        encoder.writeMapHeader(9);
+        encoder.writeMapHeader(11);
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         #if USE_FINGERPRINT_SIMULATOR
@@ -708,6 +714,10 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         encoder.writeTextString("alwaysUv"); encoder.writeBoolean(true);
         encoder.writeTextString("largeBlobs"); encoder.writeBoolean(true);
+
+        bool hasBioEnrollments = (getBioTemplateCount() > 0);
+        encoder.writeTextString("bioEnroll"); encoder.writeBoolean(hasBioEnrollments);
+        encoder.writeTextString("userVerificationMgmtPreview"); encoder.writeBoolean(hasBioEnrollments);
 
         encoder.writeUnsignedInt(5); encoder.writeUnsignedInt(8192);
 
@@ -2956,6 +2966,449 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         responseBuffer[0] = 0x00;
         CborEncoder encoder(&responseBuffer[1], 8191);
         encoder.writeMapHeader(0);
+        sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+        free(responseBuffer);
+        return;
+    }
+    else if (ctap2Cmd == 0x09 || ctap2Cmd == 0x40) {
+        static bool bioEnrollActive = false;
+        static uint8_t bioEnrollTemplateId = 0;
+        static uint8_t bioEnrollSamplesRequired = 2;
+        static uint8_t bioEnrollSamplesRemaining = 0;
+
+        auto captureBioSample = [this, channel](uint8_t sampleIndex, bool &outCanceled, bool &outFinished) -> uint8_t {
+            outCanceled = false;
+            outFinished = false;
+
+            showDisplayMessage(2, "BIO ENROLL", sampleIndex == 1 ? "Place finger" : "Place again", 0);
+
+            unsigned long waitStart = millis();
+            unsigned long lastKeepAlive = 0;
+
+#if USE_FINGERPRINT_SIMULATOR
+            bool touched = false;
+            while (millis() - waitStart < 15000) {
+                if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                    hasPendingCommand = false;
+                    outCanceled = true;
+                    return 0x0A;
+                }
+                if (millis() - lastKeepAlive > 500) {
+                    uint8_t status = 0x02;
+                    sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                    lastKeepAlive = millis();
+                }
+                if (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) {
+                    while (digitalRead(SIMULATOR_BUTTON_PIN) == LOW) { vTaskDelay(10 / portTICK_PERIOD_MS); }
+                    touched = true;
+                    break;
+                }
+                vTaskDelay(20 / portTICK_PERIOD_MS);
+            }
+            if (!touched) return 0x09;
+#else
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            uint8_t img = finger.getImage();
+            xSemaphoreGive(fingerprintMutex);
+
+            while (img == FINGERPRINT_NOFINGER) {
+                if (millis() - waitStart >= 15000) return 0x09;
+                if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                    hasPendingCommand = false;
+                    outCanceled = true;
+                    return 0x0A;
+                }
+                if (millis() - lastKeepAlive > 500) {
+                    uint8_t status = 0x02;
+                    sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                    lastKeepAlive = millis();
+                }
+                vTaskDelay(30 / portTICK_PERIOD_MS);
+                xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+                img = finger.getImage();
+                xSemaphoreGive(fingerprintMutex);
+            }
+            if (img != FINGERPRINT_OK) return 0x07;
+
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            uint8_t tz = finger.image2Tz(sampleIndex);
+            xSemaphoreGive(fingerprintMutex);
+            if (tz != FINGERPRINT_OK) return 0x07;
+#endif
+
+            bioEnrollSamplesRemaining = (bioEnrollSamplesRemaining > 0) ? bioEnrollSamplesRemaining - 1 : 0;
+
+            if (bioEnrollSamplesRemaining > 0) {
+#if !USE_FINGERPRINT_SIMULATOR
+                showDisplayMessage(1, "Remove finger", "", 0);
+                uint8_t p = 0;
+                unsigned long t0 = millis();
+                while (p != FINGERPRINT_NOFINGER && millis() - t0 < 3000) {
+                    xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+                    p = finger.getImage();
+                    xSemaphoreGive(fingerprintMutex);
+                    vTaskDelay(50 / portTICK_PERIOD_MS);
+                }
+#endif
+                return 0x00;
+            }
+
+#if USE_FINGERPRINT_SIMULATOR
+            outFinished = true;
+            return 0x00;
+#else
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            uint8_t modelResult = finger.createModel();
+            xSemaphoreGive(fingerprintMutex);
+            if (modelResult != FINGERPRINT_OK) return 0x0A;
+
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            uint8_t storeResult = finger.storeModel(bioEnrollTemplateId);
+            xSemaphoreGive(fingerprintMutex);
+            if (storeResult != FINGERPRINT_OK) return 0x0A;
+
+            outFinished = true;
+            return 0x00;
+#endif
+        };
+
+        CborParser parser(data + 1, len - 1);
+        uint8_t rootType;
+        uint64_t rootElements;
+
+        if (!parser.readTypeAndValue(rootType, rootElements) || rootType != 5) {
+            uint8_t err = 0x11;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        bool haveSubCommand = false;
+        uint64_t subCommand = 0;
+
+        uint8_t paramTemplateId[16] = {0};
+        size_t paramTemplateIdLen = 0;
+        bool haveTemplateIdParam = false;
+
+        char paramFriendlyName[64] = {0};
+        bool haveFriendlyNameParam = false;
+
+        uint8_t pinUvAuthParam[32] = {0};
+        size_t pinUvAuthParamLen = 0;
+
+        bool getModalityOnly = false;
+
+        for (uint64_t i = 0; i < rootElements; i++) {
+            uint8_t keyType;
+            uint64_t mapKey;
+            if (!parser.readTypeAndValue(keyType, mapKey) || keyType != 0) {
+                parser.skipValue();
+                continue;
+            }
+
+            if (mapKey == 0x01) {
+                uint8_t vt; uint64_t modality;
+                if (!parser.readTypeAndValue(vt, modality)) parser.skipValue();
+            } else if (mapKey == 0x02) {
+                uint8_t vt;
+                if (parser.readTypeAndValue(vt, subCommand)) haveSubCommand = true;
+                else parser.skipValue();
+            } else if (mapKey == 0x03) {
+                uint8_t pt; uint64_t pElems;
+                if (parser.readTypeAndValue(pt, pElems) && pt == 5) {
+                    for (uint64_t j = 0; j < pElems; j++) {
+                        uint8_t pkt; uint64_t pKey;
+                        if (parser.readTypeAndValue(pkt, pKey) && pkt == 0) {
+                            if (pKey == 0x01) {
+                                if (parser.readByteString(paramTemplateId, sizeof(paramTemplateId), paramTemplateIdLen))
+                                    haveTemplateIdParam = true;
+                                else parser.skipValue();
+                            } else if (pKey == 0x02) {
+                                if (parser.readTextString(paramFriendlyName, sizeof(paramFriendlyName)))
+                                    haveFriendlyNameParam = true;
+                                else parser.skipValue();
+                            } else {
+                                parser.skipValue();
+                            }
+                        } else {
+                            parser.skipValue();
+                        }
+                    }
+                } else {
+                    parser.skipValue();
+                }
+            } else if (mapKey == 0x04) {
+                uint8_t vt; uint64_t v;
+                if (!parser.readTypeAndValue(vt, v)) parser.skipValue();
+            } else if (mapKey == 0x05) {
+                if (!parser.readByteString(pinUvAuthParam, sizeof(pinUvAuthParam), pinUvAuthParamLen)) {
+                    parser.skipValue();
+                }
+            } else if (mapKey == 0x06) {
+                uint8_t vt; uint64_t v;
+                if (parser.readTypeAndValue(vt, v) && vt == 7) getModalityOnly = (v == 21);
+                else parser.skipValue();
+            } else {
+                parser.skipValue();
+            }
+        }
+
+        if (getModalityOnly && !haveSubCommand) {
+            responseBuffer[0] = CTAP2_OK;
+            CborEncoder encoder(&responseBuffer[1], 8191);
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x01);
+            encoder.writeUnsignedInt(0x01);
+            sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+            free(responseBuffer);
+            return;
+        }
+
+        if (!haveSubCommand) {
+            uint8_t err = 0x14;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        responseBuffer[0] = CTAP2_OK;
+        CborEncoder encoder(&responseBuffer[1], 8191);
+
+        if (subCommand == 0x07) {
+            encoder.writeMapHeader(3);
+            encoder.writeUnsignedInt(0x02);
+            encoder.writeUnsignedInt(0x01);
+            encoder.writeUnsignedInt(0x03);
+            encoder.writeUnsignedInt(bioEnrollSamplesRequired);
+            encoder.writeUnsignedInt(0x08);
+            encoder.writeUnsignedInt(32);
+            sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
+            free(responseBuffer);
+            return;
+        }
+
+        if (!isFidoPinSet()) {
+            uint8_t err = CTAP2_ERR_PIN_NOT_SET;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+        if (pinUvAuthParamLen == 0) {
+            uint8_t err = 0x36;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
+        if (subCommand == 0x01) {
+            uint8_t freeSlot = findFreeBioTemplateSlot();
+            if (freeSlot == 0) {
+                uint8_t err = 0x28;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            bioEnrollActive = true;
+            bioEnrollTemplateId = freeSlot;
+            bioEnrollSamplesRequired = 2;
+            bioEnrollSamplesRemaining = bioEnrollSamplesRequired;
+
+            bool canceled = false, finished = false;
+            uint8_t status = captureBioSample(1, canceled, finished);
+
+            if (canceled) {
+                bioEnrollActive = false;
+                showDisplayMessage(1, "CANCELLED", "", 0);
+                uint8_t err = 0x2D;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (status != 0x00) {
+                bioEnrollActive = false;
+                showDisplayMessage(1, "ENROLL FAILED", "", 2000);
+            } else if (finished) {
+                bioEnrollActive = false;
+                saveBioTemplateName(bioEnrollTemplateId, "Finger " + String(bioEnrollTemplateId));
+                showDisplayMessage(1, "FINGER SAVED", "", 2000);
+            }
+
+            encoder.writeMapHeader(3);
+            encoder.writeUnsignedInt(0x04);
+            encoder.writeByteString(&bioEnrollTemplateId, 1);
+            encoder.writeUnsignedInt(0x05);
+            encoder.writeUnsignedInt(status);
+            encoder.writeUnsignedInt(0x06);
+            encoder.writeUnsignedInt(bioEnrollSamplesRemaining);
+        }
+
+        else if (subCommand == 0x02) {
+            if (!bioEnrollActive || !haveTemplateIdParam || paramTemplateIdLen != 1 ||
+                paramTemplateId[0] != bioEnrollTemplateId) {
+                uint8_t err = 0x2A;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            uint8_t sampleIndex = bioEnrollSamplesRequired - bioEnrollSamplesRemaining + 1;
+            bool canceled = false, finished = false;
+            uint8_t status = captureBioSample(sampleIndex, canceled, finished);
+
+            if (canceled) {
+                bioEnrollActive = false;
+                showDisplayMessage(1, "CANCELLED", "", 0);
+                uint8_t err = 0x2D;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (status != 0x00) {
+                bioEnrollActive = false;
+                showDisplayMessage(1, "ENROLL FAILED", "", 2000);
+            } else if (finished) {
+                bioEnrollActive = false;
+                saveBioTemplateName(bioEnrollTemplateId, "Finger " + String(bioEnrollTemplateId));
+                showDisplayMessage(1, "FINGER SAVED", "", 2000);
+            }
+
+            encoder.writeMapHeader(2);
+            encoder.writeUnsignedInt(0x05);
+            encoder.writeUnsignedInt(status);
+            encoder.writeUnsignedInt(0x06);
+            encoder.writeUnsignedInt(bioEnrollSamplesRemaining);
+        }
+
+        else if (subCommand == 0x03) {
+            bioEnrollActive = false;
+            showDisplayMessage(1, "CANCELLED", "", 0);
+            encoder.writeMapHeader(0);
+        }
+
+        else if (subCommand == 0x04) {
+            bool verified = (lastFingerprintSuccessTime > 0 && millis() - lastFingerprintSuccessTime < 5000);
+            if (!verified) {
+                showDisplayMessage(1, "VERIFY FINGER", "", 0);
+                bool canceled = false;
+                unsigned long authStart = millis();
+                unsigned long lastKeepAlive = 0;
+                while (millis() - authStart < 15000) {
+                    if (hasPendingCommand && pendingCmd == CTAPHID_CANCEL && pendingChannel == channel) {
+                        hasPendingCommand = false;
+                        canceled = true;
+                        break;
+                    }
+                    if (millis() - lastKeepAlive > 500) {
+                        uint8_t status = 0x02;
+                        sendCtapResponse(channel, CTAPHID_KEEPALIVE, &status, 1);
+                        lastKeepAlive = millis();
+                    }
+                    if (fidoVerifyFingerprint()) {
+                        verified = true;
+                        lastFingerprintSuccessTime = millis();
+                        break;
+                    }
+                    delay(50);
+                }
+                if (canceled) {
+                    showDisplayMessage(1, "CANCELLED", "", 0);
+                    uint8_t err = 0x2D;
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+                if (!verified) {
+                    uint8_t err = 0x3F;
+                    sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                    free(responseBuffer);
+                    return;
+                }
+            }
+
+            std::vector<uint8_t> ids = getAllBioTemplateIds();
+            if (ids.empty()) {
+                uint8_t err = 0x2E;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+
+            encoder.writeMapHeader(1);
+            encoder.writeUnsignedInt(0x07);
+            encoder.writeArrayHeader(ids.size());
+            for (uint8_t id : ids) {
+                String name = getBioTemplateName(id);
+                if (name.length() == 0) name = "Finger " + String(id);
+                encoder.writeMapHeader(2);
+                encoder.writeUnsignedInt(0x01);
+                encoder.writeByteString(&id, 1);
+                encoder.writeUnsignedInt(0x02);
+                encoder.writeTextString(name.c_str());
+            }
+        }
+
+        else if (subCommand == 0x05) {
+            if (!haveTemplateIdParam || paramTemplateIdLen != 1 || !haveFriendlyNameParam) {
+                uint8_t err = 0x14;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            std::vector<uint8_t> ids = getAllBioTemplateIds();
+            bool exists = false;
+            for (uint8_t id : ids) { if (id == paramTemplateId[0]) { exists = true; break; } }
+            if (!exists) {
+                uint8_t err = 0x22;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            if (!saveBioTemplateName(paramTemplateId[0], String(paramFriendlyName))) {
+                uint8_t err = 0x21;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            encoder.writeMapHeader(0);
+        }
+
+        else if (subCommand == 0x06) {
+            if (!haveTemplateIdParam || paramTemplateIdLen != 1) {
+                uint8_t err = 0x14;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+            uint8_t targetId = paramTemplateId[0];
+            std::vector<uint8_t> ids = getAllBioTemplateIds();
+            bool exists = false;
+            for (uint8_t id : ids) { if (id == targetId) { exists = true; break; } }
+            if (!exists) {
+                uint8_t err = 0x22;
+                sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+                free(responseBuffer);
+                return;
+            }
+#if !USE_FINGERPRINT_SIMULATOR
+            xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
+            finger.deleteModel(targetId);
+            xSemaphoreGive(fingerprintMutex);
+#endif
+            deleteBioTemplateRecord(targetId);
+            if (bioEnrollActive && bioEnrollTemplateId == targetId) {
+                bioEnrollActive = false;
+            }
+            encoder.writeMapHeader(0);
+        }
+
+        else {
+            uint8_t err = CTAP2_ERR_UNSUPPORTED_OPTION;
+            sendCtapResponse(channel, CTAPHID_CBOR, &err, 1);
+            free(responseBuffer);
+            return;
+        }
+
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
         free(responseBuffer);
         return;
