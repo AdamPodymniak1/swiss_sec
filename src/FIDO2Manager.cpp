@@ -181,9 +181,11 @@ void savePersistedSignCount(uint32_t count) {
     EEPROM.commit();
 }
 
+static const int MAX_FAILED_UV_ATTEMPTS = 8;
+
 bool fidoVerifyFingerprint() {
-    if (getFailedUvAttempts() >= 5) {
-        fidoLogf("UV", "BLOCKED: failedUvAttempts=%d >= 5", getFailedUvAttempts());
+    if (getFailedUvAttempts() >= MAX_FAILED_UV_ATTEMPTS) {
+        fidoLogf("UV", "BLOCKED: failedUvAttempts=%d >= %d", getFailedUvAttempts(), MAX_FAILED_UV_ATTEMPTS);
         showDisplayMessage(1, "UV BLOCKED", "", 2000);
         return false;
     }
@@ -197,6 +199,8 @@ bool fidoVerifyFingerprint() {
     }
     return false;
 #else
+    bool bootstrapMode = (getBioTemplateCount() == 0);
+
     xSemaphoreTake(fingerprintMutex, portMAX_DELAY);
     uint8_t img = finger.getImage();
     for (uint8_t retry = 0; retry < 3 && img != FINGERPRINT_OK && img != FINGERPRINT_NOFINGER; retry++) {
@@ -213,6 +217,14 @@ bool fidoVerifyFingerprint() {
         fidoLogf("UV", "getImage() -> error code %d", img);
         return false;
     }
+
+    if (bootstrapMode) {
+        xSemaphoreGive(fingerprintMutex);
+        fidoLogf("UV", "bootstrapMode (0 enrollments): touch accepted as presence, no match performed");
+        resetFailedUvAttempts();
+        return true;
+    }
+
     if (finger.image2Tz() != FINGERPRINT_OK) {
         xSemaphoreGive(fingerprintMutex);
         fidoLogf("UV", "image2Tz() FAILED -> incrementFailedUvAttempts (now %d)", getFailedUvAttempts() + 1);
@@ -700,12 +712,15 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         encoder.writeUnsignedInt(4);
         encoder.writeMapHeader(11);
+
+        bool hasBioEnrollments = (getBioTemplateCount() > 0);
+
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         #if USE_FINGERPRINT_SIMULATOR
         encoder.writeTextString("uv"); encoder.writeBoolean(false);
         #else
-        encoder.writeTextString("uv"); encoder.writeBoolean(true);
+        encoder.writeTextString("uv"); encoder.writeBoolean(hasBioEnrollments);
         #endif
         encoder.writeTextString("credMgmt"); encoder.writeBoolean(true);
         encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
@@ -715,7 +730,6 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeTextString("alwaysUv"); encoder.writeBoolean(true);
         encoder.writeTextString("largeBlobs"); encoder.writeBoolean(true);
 
-        bool hasBioEnrollments = (getBioTemplateCount() > 0);
         encoder.writeTextString("bioEnroll"); encoder.writeBoolean(hasBioEnrollments);
         encoder.writeTextString("userVerificationMgmtPreview"); encoder.writeBoolean(hasBioEnrollments);
 
