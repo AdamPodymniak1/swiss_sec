@@ -120,8 +120,6 @@
             <div id="fidoCapacity" class="info-status" style="color: #888; height: auto; margin-top: 0; margin-bottom: 6px;"></div>
             <ul id="fidoVisual" class="data-list"></ul>
         </div>
-
-        <div id="vaultMessage" class="info-status"></div>
     </div>
 
     <!-- TAB 3: TOTP Authenticator -->
@@ -174,6 +172,15 @@
         </div>
 
         <div class="action-group">
+            <div class="action-title"><span>Change PIN</span></div>
+            <div class="add-row">
+                <input type="password" id="currentPinInput" placeholder="Current PIN">
+                <input type="password" id="newPinInput" placeholder="New PIN">
+                <button id="btnChangePin">Update</button>
+            </div>
+        </div>
+
+        <div class="action-group">
             <div class="action-title"><span>Administration</span></div>
             <button id="btnRegFinger">Enroll New Fingerprint</button>
             <button id="btnWipePass" class="danger-btn">Purge Password Vault</button>
@@ -181,6 +188,7 @@
         </div>
     </div>
 
+    <div id="vaultMessage" class="info-status"></div>
     <script src="popup.js"></script>
 </body>
 </html>

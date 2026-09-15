@@ -129,6 +129,7 @@ void cliTask(void *pvParameters) {
                 data["commands"][14] = "SET_CRYPTO_ALG";
                 data["commands"][15] = "ENROLL_FINGERPRINT";
                 data["commands"][16] = "FACTORY_RESET";
+                data["commands"][17] = "UPDATE_PIN";
                 CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
             else if (cmd == "SAVE_PASS" || cmd == "create") {
@@ -282,6 +283,24 @@ void cliTask(void *pvParameters) {
                 authenticated = false;
                 currentCommandState = STATE_READY;
                 CommsManager::sendEvent("SYS", "FACTORY_RESET_COMPLETE");
+            }
+            else if (cmd == "UPDATE_PIN" || cmd == "update_pin") {
+                String currentPin = req["current_pin"] | "";
+                String newPin = req["new_pin"] | "";
+
+                if (currentPin == "" || newPin == "") {
+                    CommsManager::sendError("AUTH", "MISSING_ARGS");
+                    continue;
+                }
+
+                if (verifyPin(currentPin)) {
+                    if (createPin(newPin)) {
+                        deriveStorageKey(newPin);
+                        CommsManager::sendEvent("AUTH", "PIN_UPDATED");
+                    } else {
+                        CommsManager::sendError("AUTH", "PIN_TOO_SHORT");
+                    }
+                }
             }
             else {
                 CommsManager::sendError("SYS", "UNKNOWN_CMD");

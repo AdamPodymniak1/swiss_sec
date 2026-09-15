@@ -363,6 +363,25 @@ document.getElementById('btnSetCrypto').onclick = () => {
     });
 };
 
+document.getElementById('btnChangePin').onclick = () => {
+    const currentPin = document.getElementById('currentPinInput').value;
+    const newPin = document.getElementById('newPinInput').value;
+
+    if (!currentPin || !newPin) {
+        return showMsg("Both PINs required!", "orange");
+    }
+
+    showMsg("Updating PIN...");
+    chrome.runtime.sendMessage({
+        target: "dashboard",
+        type: "SEND",
+        payload: { cmd: "UPDATE_PIN", current_pin: currentPin, new_pin: newPin }
+    });
+
+    document.getElementById('currentPinInput').value = "";
+    document.getElementById('newPinInput').value = "";
+};
+
 window.updateItem = function(type, item) {
     if (type !== 'pass') return;
 
@@ -440,19 +459,25 @@ chrome.runtime.onMessage.addListener((message) => {
                 document.getElementById('btnListPass').click();
                 document.getElementById('btnListFido').click();
                 document.getElementById('btnListTotp').click();
+            } else if (json.module === "AUTH" && json.event === "PIN_UPDATED") {
+                showMsg("PIN successfully updated!", "lime");
             }
         } else if (json.type === "error") {
             if (json.error_code === "BAD_PIN_ATTEMPT") {
-                let pinErr = document.getElementById("pinErr");
-                if (!pinErr) {
-                    pinErr = document.createElement("div");
-                    pinErr.id = "pinErr";
-                    pinErr.style.color = "orange";
-                    pinErr.style.marginBottom = "8px";
-                    authSection.insertBefore(pinErr, pinInput);
+                if (isAuthenticated) {
+                    showMsg("Wrong current PIN", "orange");
+                } else {
+                    let pinErr = document.getElementById("pinErr");
+                    if (!pinErr) {
+                        pinErr = document.createElement("div");
+                        pinErr.id = "pinErr";
+                        pinErr.style.color = "orange";
+                        pinErr.style.marginBottom = "8px";
+                        authSection.insertBefore(pinErr, pinInput);
+                    }
+                    pinErr.innerText = "Wrong PIN - " + json.message;
+                    setTimeout(() => { if (pinErr) pinErr.innerText = ""; }, 3500);
                 }
-                pinErr.innerText = "Wrong PIN - " + json.message;
-                setTimeout(() => { if (pinErr) pinErr.innerText = ""; }, 3500);
             } else {
                 showMsg("Error: " + json.error_code, "orange");
             }
