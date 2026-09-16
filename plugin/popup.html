@@ -118,6 +118,9 @@
                 <button id="btnListFido" class="icon-btn" style="font-size: 11px;" title="Refresh List">🔄</button>
             </div>
             <div id="fidoCapacity" class="info-status" style="color: #888; height: auto; margin-top: 0; margin-bottom: 6px;"></div>
+            <div class="info-status" style="color: #666; text-align: left; height: auto; margin-bottom: 6px; font-size: 10px;">
+                Not included in encrypted backups - register a 2nd key per site instead.
+            </div>
             <ul id="fidoVisual" class="data-list"></ul>
         </div>
     </div>
@@ -178,6 +181,30 @@
                 <input type="password" id="newPinInput" placeholder="New PIN">
                 <button id="btnChangePin">Update</button>
             </div>
+        </div>
+
+        <div class="action-group">
+            <div class="action-title"><span>Backup &amp; Restore</span></div>
+            <div class="info-status" style="color: #ff8800; text-align: left; height: auto; line-height: 1.4; margin-bottom: 10px;">
+                ⚠️ FIDO2 passkeys are hardware-bound and are <strong>not</strong> included in backups -
+                that's what makes this a hardware key rather than a software one. Register a second
+                physical key with each site as your passkey backup instead of relying on restore.
+            </div>
+
+            <input type="password" id="backupPassphrase" placeholder="Backup passphrase (min 8 chars, not your PIN)">
+            <button id="btnSaveBackup">Save Encrypted Backup</button>
+
+            <div style="height: 1px; background: #2a2a2a; margin: 12px 0;"></div>
+
+            <input type="password" id="restorePassphrase" placeholder="Backup passphrase">
+            <input type="file" id="restoreFile" accept=".vbk,.txt" style="width: calc(100% - 16px); margin-bottom: 8px; font-size: 11px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size: 11px; color:#bbb; margin-bottom:10px;">
+                <input type="checkbox" id="restoreOverwrite" style="width:auto; margin:0;">
+                Overwrite existing entries with the same site/login
+            </label>
+            <button id="btnRestoreBackup">Restore from File</button>
+
+            <div id="backupStatus" class="info-status" style="text-align:left; height:auto; margin-top: 6px;"></div>
         </div>
 
         <div class="action-group">

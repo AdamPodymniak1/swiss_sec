@@ -363,6 +363,58 @@ document.getElementById('btnSetCrypto').onclick = () => {
     });
 };
 
+function setBackupStatus(text, color) {
+    const el = document.getElementById('backupStatus');
+    if (el) { el.innerText = text; el.style.color = color; }
+}
+
+document.getElementById('btnSaveBackup').onclick = () => {
+    const passphraseField = document.getElementById('backupPassphrase');
+    const passphrase = passphraseField.value;
+
+    if (!passphrase || passphrase.length < 8) {
+        return showMsg("Passphrase must be at least 8 characters!", "orange");
+    }
+
+    setBackupStatus("Requesting export from device...", "#00ffff");
+    chrome.runtime.sendMessage({ target: "dashboard", type: "BACKUP_EXPORT", passphrase });
+    passphraseField.value = "";
+};
+
+document.getElementById('btnRestoreBackup').onclick = async () => {
+    const passphraseField = document.getElementById('restorePassphrase');
+    const passphrase = passphraseField.value;
+    const fileInput = document.getElementById('restoreFile');
+    const overwrite = document.getElementById('restoreOverwrite').checked;
+
+    if (!passphrase) return showMsg("Enter the backup passphrase!", "orange");
+    if (!fileInput.files || fileInput.files.length === 0) return showMsg("Choose a backup file!", "orange");
+
+    if (!confirm(overwrite
+        ? "This will overwrite any existing entries that match ones in the backup. Continue?"
+        : "This restores entries from the backup, skipping any that already exist. Continue?")) {
+        return;
+    }
+
+    try {
+        const text = (await fileInput.files[0].text()).trim();
+        if (!/^[0-9a-fA-F]+$/.test(text)) {
+            return showMsg("That doesn't look like a valid backup file.", "orange");
+        }
+
+        const digestBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+        const sha256 = Array.from(new Uint8Array(digestBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        setBackupStatus("Uploading and restoring...", "#00ffff");
+        chrome.runtime.sendMessage({ target: "dashboard", type: "BACKUP_IMPORT", hex: text, sha256, passphrase, overwrite });
+    } catch (e) {
+        showMsg("Couldn't read that file.", "orange");
+    }
+
+    passphraseField.value = "";
+    fileInput.value = "";
+};
+
 document.getElementById('btnChangePin').onclick = () => {
     const currentPin = document.getElementById('currentPinInput').value;
     const newPin = document.getElementById('newPinInput').value;
@@ -407,6 +459,21 @@ window.updateItem = function(type, item) {
 };
 
 chrome.runtime.onMessage.addListener((message) => {
+    if (message.target === "popup" && message.type === "BACKUP_PROGRESS") {
+        setBackupStatus(`${message.message} (${message.percent}%)`, "#00ffff");
+        return;
+    } else if (message.target === "popup" && message.type === "BACKUP_RESULT") {
+        setBackupStatus(message.message, message.success ? "lime" : "orange");
+        if (message.success) {
+            showMsg(message.phase === "export" ? "Backup saved!" : "Restore complete!", "lime");
+            if (message.phase === "import") {
+                document.getElementById('btnListPass').click();
+                document.getElementById('btnListTotp').click();
+            }
+        }
+        return;
+    }
+
     if (message.target === "popup" && message.type === "SERIAL_OUTPUT") {
         const json = message.json;
         if (!json) return;

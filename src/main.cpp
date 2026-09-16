@@ -9,6 +9,7 @@
 #include "StorageManager.h"
 #include "SelfTestManager.h"
 #include "FIDO2Manager.h"
+#include "BackupManager.h"
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "USB.h"
@@ -130,6 +131,11 @@ void cliTask(void *pvParameters) {
                 data["commands"][15] = "ENROLL_FINGERPRINT";
                 data["commands"][16] = "FACTORY_RESET";
                 data["commands"][17] = "UPDATE_PIN";
+                data["commands"][18] = "BACKUP_EXPORT";
+                data["commands"][19] = "BACKUP_IMPORT_BEGIN";
+                data["commands"][20] = "BACKUP_IMPORT_CHUNK";
+                data["commands"][21] = "BACKUP_IMPORT_COMMIT";
+                data["commands"][22] = "BACKUP_IMPORT_ABORT";
                 CommsManager::sendEvent("SYS", "HELP_MENU", &data);
             } 
             else if (cmd == "SAVE_PASS" || cmd == "create") {
@@ -277,6 +283,52 @@ void cliTask(void *pvParameters) {
                 }
             }
 #endif
+            else if (cmd == "BACKUP_EXPORT") {
+                String passphrase = req["passphrase"] | "";
+                String err;
+
+                showDisplayMessage(1, "EXPORTING...", "", 0);
+                if (!backupExport(passphrase, err)) {
+                    CommsManager::sendError("BACKUP", "EXPORT_FAILED", err);
+                }
+                secureWipe(passphrase);
+                showDisplayMessage(1, "Logged In", "", 0);
+            }
+            else if (cmd == "BACKUP_IMPORT_BEGIN") {
+                uint32_t totalLen = req["total_len"] | 0;
+                String sha256 = req["sha256"] | "";
+                String err;
+
+                if (backupImportBegin(totalLen, sha256, err)) {
+                    CommsManager::sendEvent("BACKUP", "IMPORT_READY");
+                } else {
+                    CommsManager::sendError("BACKUP", "IMPORT_BEGIN_FAILED", err);
+                }
+            }
+            else if (cmd == "BACKUP_IMPORT_CHUNK") {
+                String data = req["data"] | "";
+                String err;
+
+                if (!backupImportChunk(data, err)) {
+                    CommsManager::sendError("BACKUP", "IMPORT_CHUNK_FAILED", err);
+                }
+            }
+            else if (cmd == "BACKUP_IMPORT_COMMIT") {
+                String passphrase = req["passphrase"] | "";
+                bool overwrite = req["overwrite"] | false;
+                String err;
+
+                showDisplayMessage(1, "RESTORING...", "", 0);
+                if (!backupImportCommit(passphrase, overwrite, err)) {
+                    CommsManager::sendError("BACKUP", "IMPORT_FAILED", err);
+                }
+                secureWipe(passphrase);
+                showDisplayMessage(1, "Logged In", "", 0);
+            }
+            else if (cmd == "BACKUP_IMPORT_ABORT") {
+                backupImportAbort();
+                CommsManager::sendEvent("BACKUP", "IMPORT_ABORTED");
+            }
             else if (cmd == "FACTORY_RESET") {
                 factoryResetSystem();
                 clearStorageKey();

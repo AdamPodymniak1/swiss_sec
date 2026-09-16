@@ -135,11 +135,32 @@ function processIncomingLine(text) {
                 }
             } else if (jsonMsg.module === "PASS" && jsonMsg.event === "UPDATED") {
                 setAuthState("READY");
+            } else if (jsonMsg.module === "BACKUP") {
+                if (jsonMsg.event === "EXPORT_START" && jsonMsg.data) {
+                    backupExportBuffer = {
+                        chunks: new Array(jsonMsg.data.total_chunks).fill(""),
+                        totalChunks: jsonMsg.data.total_chunks,
+                        totalLen: jsonMsg.data.total_len,
+                        sha256: jsonMsg.data.sha256,
+                        received: 0
+                    };
+                    notifyBackupProgress("export", 5, "Receiving encrypted archive...");
+                } else if (jsonMsg.event === "EXPORT_CHUNK" && jsonMsg.data && backupExportBuffer) {
+                    backupExportBuffer.chunks[jsonMsg.data.seq] = jsonMsg.data.data;
+                    backupExportBuffer.received++;
+                    const pct = 5 + Math.round((backupExportBuffer.received / backupExportBuffer.totalChunks) * 90);
+                    notifyBackupProgress("export", pct, "Receiving encrypted archive...");
+                } else {
+                    dispatchBackupEvent(jsonMsg);
+                }
             }
         } else if (jsonMsg.type === "error") {
             if (jsonMsg.error_code === "PIN_REQ") setAuthState("PIN_REQ");
             else if (jsonMsg.error_code === "NEW_PIN_REQ") setAuthState("NEW_PIN_REQ");
             else if (jsonMsg.error_code === "BAD_PIN_ATTEMPT") terminal.innerText += "Wrong PIN\n";
+            else if (jsonMsg.module === "BACKUP") {
+                dispatchBackupEvent(jsonMsg);
+            }
             else if (jsonMsg.error_code === "NOT_FOUND") {
                 if (pendingGetPassword) {
                     terminal.innerText += `[System] Password not found.\n`;
@@ -165,6 +186,125 @@ function processIncomingLine(text) {
     terminal.scrollTop = terminal.scrollHeight;
 
     chrome.runtime.sendMessage({ target: "popup", type: "SERIAL_OUTPUT", text: safeText, json: jsonMsg }).catch(() => {});
+}
+
+let backupBusy = false;
+let backupExportBuffer = null;
+let backupEventListeners = [];
+
+function waitForBackupEvent(matchFn, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            backupEventListeners = backupEventListeners.filter(l => l !== listener);
+            reject(new Error("Timed out waiting for the device."));
+        }, timeoutMs);
+        const listener = (msg) => {
+            if (matchFn(msg)) {
+                clearTimeout(timer);
+                backupEventListeners = backupEventListeners.filter(l => l !== listener);
+                resolve(msg);
+            }
+        };
+        backupEventListeners.push(listener);
+    });
+}
+
+function dispatchBackupEvent(msg) {
+    backupEventListeners.slice().forEach(l => l(msg));
+}
+
+function notifyBackupProgress(phase, percent, message) {
+    chrome.runtime.sendMessage({ target: "popup", type: "BACKUP_PROGRESS", phase, percent, message }).catch(() => {});
+}
+
+function notifyBackupResult(phase, success, message) {
+    chrome.runtime.sendMessage({ target: "popup", type: "BACKUP_RESULT", phase, success, message }).catch(() => {});
+}
+
+async function runBackupExport(passphrase) {
+    if (backupBusy) { notifyBackupResult("export", false, "Another backup operation is already running."); return; }
+    backupBusy = true;
+    backupExportBuffer = null;
+
+    try {
+        notifyBackupProgress("export", 0, "Requesting export...");
+        await sendSecure({ cmd: "BACKUP_EXPORT", passphrase: passphrase });
+
+        const doneMsg = await waitForBackupEvent((m) =>
+            (m.type === "event" && m.module === "BACKUP" && m.event === "EXPORT_DONE") ||
+            (m.type === "error" && m.module === "BACKUP"),
+        60000);
+        if (doneMsg.type === "error") throw new Error(doneMsg.message || doneMsg.error_code);
+
+        const buf = backupExportBuffer;
+        if (!buf) throw new Error("No archive data received.");
+
+        const hexBlob = buf.chunks.join("");
+        if (hexBlob.length !== buf.totalLen) throw new Error("Incomplete transfer from device.");
+
+        const digestBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hexBlob));
+        const actualSha256 = bufferToHex(digestBuf);
+        if (actualSha256 !== buf.sha256) throw new Error("Checksum mismatch -- transfer may have been corrupted, try again.");
+
+        const blob = new Blob([hexBlob], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+        await chrome.downloads.download({
+            url: url,
+            filename: `vault-backup-${stamp}.vbk`,
+            saveAs: true
+        });
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+        notifyBackupResult("export", true, "Backup saved.");
+    } catch (err) {
+        notifyBackupResult("export", false, err.message || String(err));
+    } finally {
+        backupExportBuffer = null;
+        backupBusy = false;
+    }
+}
+
+async function runBackupImport(hexBlob, sha256, passphrase, overwrite) {
+    if (backupBusy) { notifyBackupResult("import", false, "Another backup operation is already running."); return; }
+    backupBusy = true;
+
+    try {
+        notifyBackupProgress("import", 0, "Starting restore...");
+        await sendSecure({ cmd: "BACKUP_IMPORT_BEGIN", total_len: hexBlob.length, sha256: sha256 });
+
+        const readyMsg = await waitForBackupEvent((m) =>
+            (m.type === "event" && m.module === "BACKUP" && m.event === "IMPORT_READY") ||
+            (m.type === "error" && m.module === "BACKUP"),
+        15000);
+        if (readyMsg.type === "error") throw new Error(readyMsg.message || readyMsg.error_code);
+
+        const CHUNK = 2048;
+        const totalChunks = Math.max(1, Math.ceil(hexBlob.length / CHUNK));
+        for (let i = 0; i < totalChunks; i++) {
+            const slice = hexBlob.substring(i * CHUNK, (i + 1) * CHUNK);
+            await sendSecure({ cmd: "BACKUP_IMPORT_CHUNK", data: slice });
+            notifyBackupProgress("import", 5 + Math.round(((i + 1) / totalChunks) * 70), "Uploading archive...");
+        }
+
+        notifyBackupProgress("import", 80, "Decrypting and restoring...");
+        await sendSecure({ cmd: "BACKUP_IMPORT_COMMIT", passphrase: passphrase, overwrite: !!overwrite });
+
+        const doneMsg = await waitForBackupEvent((m) =>
+            (m.type === "event" && m.module === "BACKUP" && m.event === "IMPORT_DONE") ||
+            (m.type === "error" && m.module === "BACKUP"),
+        30000);
+        if (doneMsg.type === "error") throw new Error(doneMsg.message || doneMsg.error_code);
+
+        const data = doneMsg.data || {};
+        notifyBackupResult("import", true, `Restored ${data.imported || 0} item(s), skipped ${data.skipped || 0}.`);
+    } catch (err) {
+        try { await sendSecure({ cmd: "BACKUP_IMPORT_ABORT" }); } catch (e) {}
+        notifyBackupResult("import", false, err.message || String(err));
+    } finally {
+        backupBusy = false;
+    }
 }
 
 function fillCredentialsInTab(targetObj, passwordValue) {
@@ -339,6 +479,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ status: "ok" });
     } else if (message.type === "CMD_DELETE_TOTP") {
         sendSecure({ cmd: "DELETE_TOTP", name: message.name });
+        sendResponse({ status: "ok" });
+    } else if (message.type === "BACKUP_EXPORT") {
+        runBackupExport(message.passphrase);
+        sendResponse({ status: "ok" });
+    } else if (message.type === "BACKUP_IMPORT") {
+        runBackupImport(message.hex, message.sha256, message.passphrase, message.overwrite);
         sendResponse({ status: "ok" });
     }
     return true;

@@ -1068,15 +1068,102 @@ bool deleteTotpSecret(const String &name) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Fingerprint (bio enrollment) template metadata storage.
-//
-// The sensor itself is the source of truth for the biometric templates
-// (image data never leaves it); this just tracks which numeric sensor
-// slots are in use and the human-friendly name assigned to each one, so
-// authenticatorBioEnrollment (CTAP2 command 0x09) can enumerate/rename/
-// remove enrollments the way platforms (e.g. Windows Hello) expect.
-// ---------------------------------------------------------------------------
+bool exportVaultPlaintext(JsonDocument &out) {
+    if (!isStorageKeyLoaded) return false;
+
+    JsonArray passwordsArr = out["passwords"].to<JsonArray>();
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/passwords.json")) {
+        File file = SPIFFS.open("/passwords.json", "r");
+        if (file) {
+            JsonDocument doc;
+            if (deserializeJson(doc, file) == DeserializationError::Ok) {
+                for (JsonPair sitePair : doc.as<JsonObject>()) {
+                    String website = sitePair.key().c_str();
+                    JsonObject lgs = sitePair.value().as<JsonObject>();
+                    for (JsonPair loginPair : lgs) {
+                        String plain = decryptStoragePayload(loginPair.value().as<String>(), storageKey);
+                        if (plain.length() == 0) continue;
+                        JsonObject item = passwordsArr.add<JsonObject>();
+                        item["site"] = website;
+                        item["login"] = loginPair.key().c_str();
+                        item["password"] = plain;
+                    }
+                }
+            }
+            file.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+
+    JsonArray totpArr = out["totp"].to<JsonArray>();
+    xSemaphoreTake(storageMutex, portMAX_DELAY);
+    if (SPIFFS.exists("/totp.json")) {
+        File file = SPIFFS.open("/totp.json", "r");
+        if (file) {
+            JsonDocument doc;
+            if (deserializeJson(doc, file) == DeserializationError::Ok) {
+                for (JsonPair pair : doc.as<JsonObject>()) {
+                    String plain = decryptStoragePayload(pair.value().as<String>(), storageKey);
+                    if (plain.length() == 0) continue;
+                    JsonObject item = totpArr.add<JsonObject>();
+                    item["name"] = pair.key().c_str();
+                    item["secret"] = plain;
+                }
+            }
+            file.close();
+        }
+    }
+    xSemaphoreGive(storageMutex);
+
+    out["crypto_alg"] = loadDefaultCryptoAlg();
+    out["backup_format"] = 1;
+    return true;
+}
+
+bool importVaultPlaintext(JsonDocument &in, bool overwrite, uint32_t &importedCount, uint32_t &skippedCount) {
+    importedCount = 0;
+    skippedCount = 0;
+    if (!isStorageKeyLoaded) return false;
+
+    JsonArray passwordsArr = in["passwords"].as<JsonArray>();
+    for (JsonObject item : passwordsArr) {
+        String site = item["site"] | "";
+        String login = item["login"] | "";
+        String pass = item["password"] | "";
+        if (site == "" || login == "") { skippedCount++; continue; }
+
+        if (isPasswordExists(site, login)) {
+            if (!overwrite) { skippedCount++; continue; }
+            deletePassword(site, login);
+        }
+        if (savePassword(site, login, pass)) {
+            importedCount++;
+        } else {
+            skippedCount++;
+        }
+    }
+
+    JsonArray totpArr = in["totp"].as<JsonArray>();
+    for (JsonObject item : totpArr) {
+        String name = item["name"] | "";
+        String secret = item["secret"] | "";
+        if (name == "" || secret == "") { skippedCount++; continue; }
+
+        bool exists = getTotpSecret(name).length() > 0;
+        if (exists && !overwrite) { skippedCount++; continue; }
+
+        saveTotpSecret(name, secret);
+        importedCount++;
+    }
+
+    if (in["crypto_alg"].is<int>()) {
+        saveDefaultCryptoAlg(in["crypto_alg"].as<int>());
+    }
+
+    return true;
+}
+
 static const uint8_t MAX_BIO_TEMPLATES = 127;
 
 std::vector<uint8_t> getAllBioTemplateIds() {
@@ -1112,7 +1199,7 @@ uint8_t findFreeBioTemplateSlot() {
         }
         if (!taken) return id;
     }
-    return 0; // 0 = no free slot available
+    return 0;
 }
 
 bool saveBioTemplateName(uint8_t templateId, const String &friendlyName) {

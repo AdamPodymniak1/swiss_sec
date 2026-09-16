@@ -15,6 +15,6 @@
       "world": "ISOLATED"
     }
   ],
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "contextMenus"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "contextMenus", "downloads"],
   "host_permissions": ["<all_urls>"]
 }
