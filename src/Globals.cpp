@@ -10,6 +10,7 @@ String pendingPasswordToSave = "";
 SemaphoreHandle_t displayMutex = NULL;
 SemaphoreHandle_t fingerprintMutex = NULL;
 SemaphoreHandle_t storageMutex = NULL;
+SemaphoreHandle_t ateccMutex = NULL;
 
 QueueHandle_t cryptoQueue = NULL;
 

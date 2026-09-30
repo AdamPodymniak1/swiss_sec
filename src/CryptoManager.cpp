@@ -12,6 +12,7 @@
 #include "mbedtls/error.h"
 #include "mbedtls/version.h"
 #include "StorageManager.h"
+#include "AteccManager.h"
 #include <Ed25519.h>
 #include <nvs_flash.h>
 #include <nvs.h>
@@ -29,10 +30,30 @@ byte aesKey[32] = {0};
 
 SecureTerminal Terminal;
 
+// Fills `len` bytes from the ESP32's own TRNG, then - if an ATECC chip is
+// present - mixes in an equal amount of its hardware RNG output via XOR.
+// XOR-combining two independent entropy sources is a standard defense in
+// depth: the result is at least as unpredictable as the stronger source,
+// so a missing/failed/tampered ATECC can only ever fall back to the
+// ESP32's own TRNG, never make output weaker than what we had before.
+static void secureFillRandom(uint8_t *out, size_t len) {
+  esp_fill_random(out, len);
+
+  if (!atecc_available()) return;
+
+  uint8_t *ateccBytes = (uint8_t *)malloc(len);
+  if (!ateccBytes) return;
+
+  if (atecc_fill_random(ateccBytes, len)) {
+    for (size_t i = 0; i < len; i++) out[i] ^= ateccBytes[i];
+  }
+  free(ateccBytes);
+}
+
 static int hw_rng_callback(void *p_rng, unsigned char *output, size_t output_len) {
   (void)p_rng;
-  esp_fill_random(output, output_len);
-  return 0; 
+  secureFillRandom(output, output_len);
+  return 0;
 }
 
 size_t fromHex(const String &hex, byte *output, size_t max_len) {
@@ -63,8 +84,9 @@ String toHex(const byte *data, size_t len) {
 
 void initCrypto() {
   Serial.println("[SYS] CRYPTO_INIT");
+  atecc_init(); // optional hardware entropy/keygen source; absence is non-fatal
   init_aes_nonce_subsystem();
-  esp_fill_random(aesKey, sizeof(aesKey));
+  secureFillRandom(aesKey, sizeof(aesKey));
   encryptionActive = false;
 }
 
@@ -320,7 +342,7 @@ String generateRandomPassword(size_t length) {
     uint8_t *randomBytes = (uint8_t *)malloc(length);
     if (!randomBytes) return "";
 
-    esp_fill_random(randomBytes, length);
+    secureFillRandom(randomBytes, length);
 
     String password = "";
     password.reserve(length);
@@ -485,13 +507,47 @@ bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65) {
     #define M_D   d
 #endif
 
+// Shared by both the software (signECDSA_P256) and ATECC-backed
+// (signECDSA_P256_ATECC) signers: packs raw (r, s) values into the DER
+// SEQUENCE{INTEGER r, INTEGER s} encoding WebAuthn/FIDO2 signatures use.
+static bool derEncodeSignature(mbedtls_mpi &r, mbedtls_mpi &s, uint8_t *sigDerOut, size_t *sigDerLenOut) {
+    size_t maxSigCapacity = *sigDerLenOut;
+    unsigned char buf[128];
+    unsigned char *p = buf + sizeof(buf);
+    int len = 0;
+
+    int ret = mbedtls_asn1_write_mpi(&p, buf, &s);
+    if (ret < 0) return false;
+    len += ret;
+
+    ret = mbedtls_asn1_write_mpi(&p, buf, &r);
+    if (ret < 0) return false;
+    len += ret;
+
+    ret = mbedtls_asn1_write_len(&p, buf, len);
+    if (ret < 0) return false;
+    len += ret;
+
+    ret = mbedtls_asn1_write_tag(&p, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    if (ret <= 0) return false;
+    len += ret;
+
+    if ((size_t)len > maxSigCapacity) {
+        Serial.println("[ERR] Provided sigDerOut too small");
+        return false;
+    }
+
+    memcpy(sigDerOut, p, len);
+    *sigDerLenOut = len;
+    return true;
+}
+
 bool signECDSA_P256(const uint8_t *privateKey32, const uint8_t *digest32, size_t digestLen,
                     uint8_t *sigDerOut, size_t *sigDerLenOut) {
     if (!privateKey32 || !digest32 || digestLen != 32 || !sigDerOut || !sigDerLenOut) {
         return false;
     }
 
-    size_t maxSigCapacity = *sigDerLenOut;
     mbedtls_ecdsa_context ctx;
     mbedtls_ecdsa_init(&ctx);
 
@@ -505,47 +561,59 @@ bool signECDSA_P256(const uint8_t *privateKey32, const uint8_t *digest32, size_t
     mbedtls_mpi_init(&r);
     mbedtls_mpi_init(&s);
 
-    unsigned char buf[128];
-    unsigned char *p = buf + sizeof(buf);
-    int len = 0;
-
-    int ret = mbedtls_ecdsa_sign(&ctx.M_GRP, &r, &s, &ctx.M_D, digest32, digestLen, hw_rng_callback, NULL);
-    if (ret != 0) {
+    bool ok = false;
+    if (mbedtls_ecdsa_sign(&ctx.M_GRP, &r, &s, &ctx.M_D, digest32, digestLen, hw_rng_callback, NULL) != 0) {
         Serial.println("[ERR] Core ECDSA math failed");
-        goto cleanup;
+    } else {
+        ok = derEncodeSignature(r, s, sigDerOut, sigDerLenOut);
     }
-
-    ret = mbedtls_asn1_write_mpi(&p, buf, &s);
-    len += ret;
-
-    ret = mbedtls_asn1_write_mpi(&p, buf, &r);
-    len += ret;
-
-    ret = mbedtls_asn1_write_len(&p, buf, len);
-    len += ret;
-
-    ret = mbedtls_asn1_write_tag(&p, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
-    if (ret <= 0) { goto cleanup; }
-    len += ret;
-
-    if ((size_t)len > maxSigCapacity) {
-        Serial.println("[ERR] Provided sigDerOut too small");
-        goto cleanup;
-    }
-
-    memcpy(sigDerOut, p, len);
-    *sigDerLenOut = len;
 
     mbedtls_mpi_free(&r);
     mbedtls_mpi_free(&s);
     mbedtls_ecdsa_free(&ctx);
+    return ok;
+}
+
+// Hardware-backed counterparts of generateKeypairP256/signECDSA_P256: the
+// private key is generated by and never leaves the ATECC chip (slot
+// `slot` is the key handle instead of a 32-byte private key). Output
+// shapes match their software equivalents exactly (65-byte uncompressed
+// public key, DER signature) so callers can treat them as drop-in
+// alternatives. Both simply return false if no ATECC chip is present.
+//
+// Not currently wired into FIDO2Manager's credential flow - this repo
+// intentionally leaves the chip's zones unlocked (see AteccManager.h), and
+// signing behavior on an unlocked chip should be verified against real
+// hardware before it backs live credentials.
+bool generateKeypairP256_ATECC(uint8_t slot, uint8_t *publicKeyOut65) {
+    if (!publicKeyOut65) return false;
+
+    uint8_t pub64[64];
+    if (!atecc_genkey_p256(slot, pub64)) return false;
+
+    publicKeyOut65[0] = 0x04;
+    memcpy(publicKeyOut65 + 1, pub64, 64);
     return true;
+}
 
-cleanup:
+bool signECDSA_P256_ATECC(uint8_t slot, const uint8_t *digest32, size_t digestLen,
+                           uint8_t *sigDerOut, size_t *sigDerLenOut) {
+    if (!digest32 || digestLen != 32 || !sigDerOut || !sigDerLenOut) return false;
+
+    uint8_t rawSig[64];
+    if (!atecc_sign_p256(slot, digest32, rawSig)) return false;
+
+    mbedtls_mpi r, s;
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
+
+    bool ok = mbedtls_mpi_read_binary(&r, rawSig, 32) == 0 &&
+              mbedtls_mpi_read_binary(&s, rawSig + 32, 32) == 0 &&
+              derEncodeSignature(r, s, sigDerOut, sigDerLenOut);
+
     mbedtls_mpi_free(&r);
     mbedtls_mpi_free(&s);
-    mbedtls_ecdsa_free(&ctx);
-    return false;
+    return ok;
 }
 
 bool generateFido2Signature(const String& privateKeyHex, const uint8_t* clientDataHash, size_t hashLen, uint8_t* sigOutBuffer, size_t* sigOutLen) {
@@ -566,7 +634,7 @@ bool generateFido2Signature(const String& privateKeyHex, const uint8_t* clientDa
 
 static int mbedtls_fido2_rng(void *p_rng, unsigned char *output, size_t output_len) {
     (void)p_rng;
-    esp_fill_random(output, output_len);
+    secureFillRandom(output, output_len);
     return 0;
 }
 
@@ -574,7 +642,7 @@ bool generateEd25519KeyPair(String& privateKeyHexOut, uint8_t* pubKeyXOut) {
     uint8_t priv[32];
     uint8_t pub[32];
 
-    esp_fill_random(priv, 32);
+    secureFillRandom(priv, 32);
 
     Ed25519::derivePublicKey(pub, priv);
 

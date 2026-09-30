@@ -47,6 +47,7 @@ extern String pendingPasswordToSave;
 extern SemaphoreHandle_t displayMutex;
 extern SemaphoreHandle_t fingerprintMutex;
 extern SemaphoreHandle_t storageMutex;
+extern SemaphoreHandle_t ateccMutex;
 extern QueueHandle_t cryptoQueue;
 
 extern int defaultCryptoAlg;

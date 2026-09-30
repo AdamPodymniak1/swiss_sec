@@ -26,6 +26,11 @@ String decryptStoragePayload(const String &payload, const byte *key256);
 bool generateKeypairP256(uint8_t *privateKeyOut, uint8_t *publicKeyOut65);
 bool signECDSA_P256(const uint8_t *privateKey32, const uint8_t *digest32, size_t digestLen, uint8_t *sigDerOut, size_t *sigDerLenOut);
 
+// Hardware-backed alternatives - see the definitions in CryptoManager.cpp
+// for why these aren't wired into the live FIDO2 flow yet.
+bool generateKeypairP256_ATECC(uint8_t slot, uint8_t *publicKeyOut65);
+bool signECDSA_P256_ATECC(uint8_t slot, const uint8_t *digest32, size_t digestLen, uint8_t *sigDerOut, size_t *sigDerLenOut);
+
 class SecureTerminal : public Print {
 public:
   String buffer;

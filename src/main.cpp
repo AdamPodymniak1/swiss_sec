@@ -369,6 +369,7 @@ void setup() {
     displayMutex = xSemaphoreCreateMutex();
     fingerprintMutex = xSemaphoreCreateMutex();
     storageMutex = xSemaphoreCreateMutex();
+    ateccMutex = xSemaphoreCreateMutex();
     
     cryptoQueue = xQueueCreate(2, sizeof(CryptoRequest));
 
