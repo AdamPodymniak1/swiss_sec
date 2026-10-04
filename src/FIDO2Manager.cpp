@@ -715,6 +715,17 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
 
         bool hasBioEnrollments = (getBioTemplateCount() > 0);
 
+        // CTAP2 canonical CBOR requires map keys sorted by encoded byte
+        // length first, then lexically within a length - NOT by logical
+        // grouping. Chromium's CBOR parser enforces this strictly and
+        // rejects the whole GetInfo response otherwise (confirmed via
+        // chrome://device-log: "Map keys must be strictly monotonically
+        // increasing based on byte length and then by byte-wise lexical
+        // order" - the "bioEnroll"/"clientPin" and "alwaysUv"/"credMgmt"
+        // pairs, same length each, used to be scattered apart below).
+        // Order here: rk,up,uv (2) / alwaysUv,credMgmt (8) /
+        // bioEnroll,clientPin (9) / largeBlobs (10) / pinUvAuthToken (14) /
+        // credentialMgmtPreview (21) / userVerificationMgmtPreview (27).
         encoder.writeTextString("rk"); encoder.writeBoolean(true);
         encoder.writeTextString("up"); encoder.writeBoolean(true);
         #if USE_FINGERPRINT_SIMULATOR
@@ -722,15 +733,18 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         #else
         encoder.writeTextString("uv"); encoder.writeBoolean(hasBioEnrollments);
         #endif
-        encoder.writeTextString("credMgmt"); encoder.writeBoolean(true);
-        encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
-        encoder.writeTextString("pinUvAuthToken"); encoder.writeBoolean(true);
-        encoder.writeTextString("credentialMgmtPreview"); encoder.writeBoolean(true);
-
         encoder.writeTextString("alwaysUv"); encoder.writeBoolean(true);
-        encoder.writeTextString("largeBlobs"); encoder.writeBoolean(true);
+        encoder.writeTextString("credMgmt"); encoder.writeBoolean(true);
 
         encoder.writeTextString("bioEnroll"); encoder.writeBoolean(hasBioEnrollments);
+        encoder.writeTextString("clientPin"); encoder.writeBoolean(isFidoPinSet());
+
+        encoder.writeTextString("largeBlobs"); encoder.writeBoolean(true);
+
+        encoder.writeTextString("pinUvAuthToken"); encoder.writeBoolean(true);
+
+        encoder.writeTextString("credentialMgmtPreview"); encoder.writeBoolean(true);
+
         encoder.writeTextString("userVerificationMgmtPreview"); encoder.writeBoolean(hasBioEnrollments);
 
         encoder.writeUnsignedInt(5); encoder.writeUnsignedInt(8192);
@@ -777,7 +791,17 @@ void FIDO2HIDDevice::processCborCommand(uint32_t channel, uint8_t* data, uint16_
         encoder.writeUnsignedInt(0x0B);
         encoder.writeUnsignedInt(MAX_LARGE_BLOB_ARRAY);
 
-        encoder.writeUnsignedInt(0x0E);
+        // Key 0x0F (maxCredBlobLength), not 0x0E (firmwareVersion - unused,
+        // optional, fine to omit). Chromium's parser requires this exact
+        // key whenever "credBlob" is advertised in the extensions list
+        // above (key 2) - without it, (key-present != credBlob-advertised)
+        // and the ENTIRE GetInfo response is rejected outright, which is
+        // silent from the UI's perspective: it just falls back to treating
+        // the device as U2F-only. Confirmed via Chromium's own source
+        // (device/fido/device_response_converter.cc) after
+        // chrome://device-log showed "only supports the U2F protocol"
+        // despite the CBOR itself parsing and printing fine.
+        encoder.writeUnsignedInt(0x0F);
         encoder.writeUnsignedInt(MAX_CRED_BLOB_LEN);
 
         sendCtapResponse(channel, CTAPHID_CBOR, responseBuffer, 1 + encoder.getOffset());
