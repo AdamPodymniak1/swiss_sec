@@ -10,16 +10,18 @@
 // responding, so the rest of the firmware must keep working fine without
 // it - this is a hardware add-on, never a hard dependency.
 //
-// IMPORTANT: this chip's config/data zones are intentionally left UNLOCKED
-// (no Lock command is implemented here - locking is permanent and a wrong
-// config bricks the chip for that purpose forever). atecc_fill_random works
-// fine unlocked (bench-verified). atecc_genkey_p256 does NOT: on real
-// hardware (ATECC608, silicon rev 00 00 60 02) GenKey-private fails with
-// status 0x0F (execution error) until the zones are locked - see
-// src/debug_genkey_sign/AteccGenKeySignTest.cpp, which is how this was
-// confirmed. atecc_sign_p256 was never reached in that test as a result and
-// remains unverified. Both functions are kept here, dormant, for when zone
-// locking is deliberately taken on as its own task.
+// This chip's Config zone IS locked (permanently, on this physical chip -
+// see atecc_lock_config_zone below). atecc_genkey_p256 would not work
+// otherwise: on real hardware (ATECC608, silicon rev 00 00 60 02),
+// GenKey-private failed with status 0x0F (execution error) against an
+// unlocked Config zone - see src/debug_genkey_sign/AteccGenKeySignTest.cpp,
+// which is how that was confirmed, and how GenKey + Sign were both
+// subsequently confirmed working (with a software mbedtls signature
+// verification round-trip) once the zone was locked. The Data/OTP zone
+// (LockValue, byte 86) is deliberately left unlocked - nothing here needs
+// it locked, and it's one less irreversible step taken than necessary.
+// atecc_fill_random works regardless of lock state (bench-verified both
+// ways).
 
 bool atecc_init();
 bool atecc_available();
@@ -50,6 +52,13 @@ bool atecc_sign_p256(uint8_t slot, const uint8_t digest32[32], uint8_t sigOut64[
 // side effects. Byte 87 (LockConfig) and byte 86 (LockValue) report the
 // zones' current lock state: 0x55 = unlocked, 0x00 = locked.
 bool atecc_read_config_zone(uint8_t configOut128[128]);
+
+// Reads just LockValue (byte 86) and LockConfig (byte 87) - a single
+// 32-byte Read of the block containing them, not the full zone. Same
+// always-legal, no-side-effects guarantee as atecc_read_config_zone, but
+// cheaper when only the lock state is needed (e.g. right after
+// atecc_init(), as the only other I2C operation of that boot).
+bool atecc_read_lock_state(uint8_t *lockValueOut, uint8_t *lockConfigOut);
 
 // PERMANENTLY locks the Config zone (Lock, opcode 0x17, mode 0x80 =
 // LOCK_ZONE_CONFIG | LOCK_ZONE_NO_CRC). This cannot be undone, ever, on

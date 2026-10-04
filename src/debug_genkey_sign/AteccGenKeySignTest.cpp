@@ -53,24 +53,15 @@ void setup() {
         return;
     }
 
-    Serial.println(F("Step 0: read Config zone (read-only, always safe) ..."));
-    uint8_t cfg[128];
-    if (!atecc_read_config_zone(cfg)) {
-        Serial.println(F("  -> FAILED to read config zone. Stopping."));
-        return;
-    }
-    for (int block = 0; block < 4; block++) {
-        Serial.printf("  [%3d] ", block * 32);
-        printHex(cfg + block * 32, 32);
-    }
-    Serial.printf("  LockValue  (byte 86) = 0x%02X (%s)\n", cfg[86], cfg[86] == 0x55 ? "UNLOCKED" : "LOCKED");
-    Serial.printf("  LockConfig (byte 87) = 0x%02X (%s)\n", cfg[87], cfg[87] == 0x55 ? "UNLOCKED" : "LOCKED");
-    Serial.print(F("  SlotConfig[0] (bytes 20-21) = "));
-    printHex(cfg + 20, 2);
-    Serial.print(F("  KeyConfig[0]  (bytes 96-97) = "));
-    printHex(cfg + 96, 2);
-
-    Serial.println(F("\nStep 1: GenKey (create new random private key in slot 0) ..."));
+    // No Step 0 Config-zone dump here: that's a separate 4x wake() call
+    // (atecc_read_config_zone) and combining it with GenKey+Sign in one
+    // boot runs into a wake-reliability issue unrelated to zone locking -
+    // past the 2nd wake() call in a single boot, the 3rd+ intermittently
+    // fails. Use the dedicated lock-state check or a standalone config
+    // read if you need that dump; this tool stays within the proven-
+    // reliable 2-wake-call range (init, then GenKey) before Sign adds a 3rd
+    // and becomes a candidate to hit the same issue.
+    Serial.println(F("Step 1: GenKey (create new random private key in slot 0) ..."));
     uint8_t pub64[64];
     if (!atecc_genkey_p256(0, pub64)) {
         Serial.println(F("  -> FAILED. See [SYS] ATECC_GENKEY status line above for the reason."));

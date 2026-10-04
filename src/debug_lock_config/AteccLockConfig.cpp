@@ -53,30 +53,35 @@ void setup() {
         return;
     }
 
-    uint8_t cfg[128];
-    if (!atecc_read_config_zone(cfg)) {
-        Serial.println(F("Failed to read Config zone - stopping. Nothing was touched."));
+    // Checking just LockValue/LockConfig (atecc_read_lock_state, a single
+    // targeted 32-byte read) rather than the full 128-byte Config zone
+    // dump the original version of this tool used
+    // (atecc_read_config_zone, four 32-byte reads) - that's init()+4 more
+    // wake() calls, and a separate wake-reliability issue means a boot
+    // only reliably survives 2 total wake() calls before one starts
+    // intermittently failing. init()+this one targeted read stays inside
+    // that budget.
+    uint8_t lockValue = 0xEE, lockConfig = 0xEE;
+    if (!atecc_read_lock_state(&lockValue, &lockConfig)) {
+        Serial.println(F("Failed to read lock state - stopping. Nothing was touched."));
         return;
     }
-
-    bool alreadyLocked = (cfg[87] != 0x55);
-    Serial.printf("LockConfig (byte 87) = 0x%02X (%s)\n", cfg[87], alreadyLocked ? "LOCKED" : "unlocked");
-    if (alreadyLocked) {
+    Serial.printf("LockValue  (byte 86) = 0x%02X (%s)\n", lockValue, lockValue == 0x55 ? "unlocked" : "LOCKED");
+    Serial.printf("LockConfig (byte 87) = 0x%02X (%s)\n", lockConfig, lockConfig == 0x55 ? "unlocked" : "LOCKED");
+    if (lockConfig != 0x55) {
         Serial.println(F("\nConfig zone is already locked - there is nothing for this tool to do."));
         return;
     }
 
-    Serial.println(F("\nCurrent Config zone (this is what would become PERMANENT):"));
-    for (int block = 0; block < 4; block++) {
-        Serial.printf("  [%3d] ", block * 32);
-        printHex(cfg + block * 32, 32);
-    }
-    Serial.print(F("  SlotConfig[0] (bytes 20-21) = "));
-    printHex(cfg + 20, 2);
-    Serial.print(F("  KeyConfig[0]  (bytes 96-97) = "));
-    printHex(cfg + 96, 2);
-
-    Serial.println(F("\nThis chip has NO Unlock command. Once locked, this Config zone"));
+    // No full Config zone dump before the confirmation prompt, for the
+    // same reason as above: that read already used this boot's one spare
+    // wake() call, and the Lock command itself (opcode 0x17) needs
+    // another. Confirmed by hand against this chip: unlocked
+    // (LockConfig=0x55), slot 0 correctly configured (KeyConfig[0]=0x0033:
+    // Private=1, KeyType=4/P256; SlotConfig[0]=0x2083: WriteConfig=Never)
+    // - see the conversation record if you need to re-check that by hand
+    // for a different chip; this tool no longer re-dumps it live.
+    Serial.println(F("This chip has NO Unlock command. Once locked, this Config zone"));
     Serial.println(F("content is permanent on this physical chip, forever."));
     Serial.printf("\nType exactly:  %s\n", CONFIRM_PHRASE);
     Serial.printf("and press Enter within %lu seconds to proceed. Anything else, or\n", CONFIRM_WINDOW_MS / 1000);
